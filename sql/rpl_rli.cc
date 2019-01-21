@@ -105,6 +105,7 @@ Relay_log_info::Relay_log_info(bool is_slave_recovery
    gtid_set(global_sid_map, global_sid_lock),
    log_space_total(0), ignore_log_space_limit(0),
    sql_force_rotate_relay(false),
+   slave_has_caughtup(true),
    last_master_timestamp(0),
    events_since_last_sample(0),
    slave_skip_counter(0),
@@ -323,7 +324,18 @@ void Relay_log_info::reset_notified_checkpoint(ulong shift, time_t new_ts,
       mysql_mutex_lock(&data_lock);
     else
       mysql_mutex_assert_owner(&data_lock);
-    last_master_timestamp= new_ts;
+
+    // Set the flag to say that "the slave has not yet caught up"
+    slave_has_caughtup= false;
+    /*
+      Note that we only skip assigning new_ts to last_master_timestamp when
+      new_ts is smaller than last_master_timestamp to avoid a sudden spike on
+      second behind master. If new_ts is very big, say bigger than time(0), we
+      will assign the current time to last_master_timestamp instead.
+    */
+    if (new_ts > last_master_timestamp)
+      last_master_timestamp= std::min(time(nullptr), new_ts);
+
     if (need_data_lock)
       mysql_mutex_unlock(&data_lock);
   }
@@ -2521,11 +2533,13 @@ void Relay_log_info::adapt_to_master_version(Format_description_log_event *fdle)
 /**
    Flushes gtid info state after executing the current event.
    @param[in] force Forces the synchronization.
+   @param[in] xid_event If we are executing XID event, the job of updating
+                        slave_gtid_info is delegated to storage engine.
 
    @return false Success
            true  Failure
 */
-int Relay_log_info::flush_gtid_infos(bool force)
+int Relay_log_info::flush_gtid_infos(bool force, bool xid_event)
 {
   DBUG_ENTER("Relay_log_info::flush_gtid_infos");
   bool error = false;
@@ -2543,7 +2557,13 @@ int Relay_log_info::flush_gtid_infos(bool force)
       if (strcmp(gtid_info->get_last_gtid_string(), "") == 0)
         force = true;
       gtid_info->set_last_gtid(last_gtid);
-      if ((error = gtid_info->flush_info(force)))
+      if (xid_event && slave_gtid_info == SLAVE_GTID_INFO_OPTIMIZED) {
+        // Delegate to storage engine.
+        info_thd->append_slave_gtid_info(gtid_info->get_internal_id(),
+                                         gtid_info->get_database_name(),
+                                         gtid_info->get_last_gtid_string());
+      } else if (slave_gtid_info == SLAVE_GTID_INFO_ON &&
+                 (error = gtid_info->flush_info(force)))
         break;
     }
   }

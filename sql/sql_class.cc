@@ -378,6 +378,18 @@ void thd_binlog_pos(const THD *thd,
   thd->get_trans_pos(file_var, pos_var, gtid_var);
 }
 
+void
+thd_slave_gtid_info(const THD *thd,
+                    void *slave_gtid_info)
+{
+  if (thd) {
+    for (auto it: thd->get_slave_gtid_info()) {
+      static_cast<std::vector<st_slave_gtid_info>*>
+        (slave_gtid_info)->push_back(it);
+    }
+  }
+}
+
 /**
   Set up various THD data for a new connection
 
@@ -1469,8 +1481,7 @@ void THD::init(void)
 #endif /* defined(ENABLED_DEBUG_SYNC) */
 
   /* Initialize session_tracker and create all tracker objects */
-  session_tracker.init(this->charset());
-  session_tracker.enable(this);
+  session_tracker.init(this);
 
   owned_gtid.sidno= 0;
   owned_gtid.gno= 0;

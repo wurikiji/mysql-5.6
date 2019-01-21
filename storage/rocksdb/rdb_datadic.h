@@ -21,6 +21,7 @@ class Field_pack_info;
 class Column_family_manager;
 class Table_ddl_manager;
 
+#include <atomic>
 /* C++ standard header files */
 #include <map>
 #include <mutex>
@@ -258,7 +259,7 @@ public:
   }
 
   /* Make a key that is right after the given key. */
-  void successor(uchar *packed_tuple, uint len);
+  int successor(uchar *packed_tuple, uint len);
 
   /*
     This can be used to compare prefixes.
@@ -329,6 +330,18 @@ public:
   {
     return m_key_parts;
   }
+
+  /*
+    Get a field object for key part #part_no
+
+    @detail
+      SQL layer thinks unique secondary indexes and indexes in partitioned
+      tables are not "Extended" with Primary Key columns.
+
+      Internally, we always extend all indexes with PK columns. This function
+      uses our definition of how the index is Extended.
+  */
+  inline Field* get_table_field_for_part_no(TABLE *table, uint part_no);
 
   const std::string& get_name() const {
     return name;
@@ -467,6 +480,9 @@ private:
 
   /* Length of the unpack_data */
   uint unpack_data_len;
+
+  /* mutex to protect setup */
+  mysql_mutex_t mutex;
 };
 
 
@@ -557,6 +573,12 @@ public:
   Field *get_field_in_table(TABLE *tbl);
 };
 
+inline
+Field* RDBSE_KEYDEF::get_table_field_for_part_no(TABLE *table, uint part_no)
+{
+  DBUG_ASSERT(part_no < get_m_key_parts());
+  return pack_info[part_no].get_field_in_table(table);
+}
 
 /*
   A table definition. This is an entry in the mapping
@@ -636,10 +658,11 @@ class Table_ddl_manager
   mysql_rwlock_t rwlock;
 
   Sequence_generator sequence;
-
-  std::unordered_set<GL_INDEX_ID> changed_indexes;
-  std::mutex changed_indexes_mutex;
-
+  // A queue of table stats to write into data dictionary
+  // It is produced by event listener (ie compaction and flush threads)
+  // and consumed by the rocksdb background thread
+  std::map<GL_INDEX_ID, MyRocksTablePropertiesCollector::IndexStats>
+    stats2store;
 public:
   /* Load the data dictionary from on-disk storage */
   bool init(Dict_manager *dict_arg, Column_family_manager *cf_manager,
@@ -651,8 +674,14 @@ public:
   RDBSE_KEYDEF* find(GL_INDEX_ID gl_index_id);
   std::unique_ptr<RDBSE_KEYDEF> get_copy_of_keydef(GL_INDEX_ID gl_index_id);
   void set_stats(
-    const std::vector<MyRocksTablePropertiesCollector::IndexStats>& stats
+    const std::unordered_map<GL_INDEX_ID,
+    MyRocksTablePropertiesCollector::IndexStats>& stats
   );
+  void adjust_stats(
+    const std::vector<MyRocksTablePropertiesCollector::IndexStats>& new_data,
+    const std::vector<MyRocksTablePropertiesCollector::IndexStats>& deleted_data
+     =std::vector<MyRocksTablePropertiesCollector::IndexStats>());
+  void persist_stats();
 
   /* Modify the mapping and write it to on-disk storage */
   int put_and_write(RDBSE_TABLE_DEF *key_descr, rocksdb::WriteBatch *batch);
@@ -662,8 +691,6 @@ public:
 
   uint get_and_update_next_number(Dict_manager *dict)
     { return sequence.get_and_update_next_number(dict); }
-  void add_changed_indexes(const std::vector<GL_INDEX_ID>& changed_indexes);
-  std::unordered_set<GL_INDEX_ID> get_changed_indexes();
 
   /* Walk the data dictionary */
   int scan(void* cb_arg, int (*callback)(void* cb_arg, RDBSE_TABLE_DEF*));
@@ -705,6 +732,8 @@ public:
   void update(const char* binlog_name, const my_off_t binlog_pos,
               const char* binlog_gtid, rocksdb::WriteBatchBase* batch);
   bool read(char* binlog_name, my_off_t& binlog_pos, char* binlog_gtid);
+  void update_slave_gtid_info(uint id, const char* db, const char* gtid,
+                              rocksdb::WriteBatchBase *write_batch);
 
 private:
   Dict_manager *dict;
@@ -716,6 +745,7 @@ private:
                             const char *binlog_gtid);
   bool unpack_value(const uchar *value, char *binlog_name,
                     my_off_t &binlog_pos, char *binlog_gtid);
+  std::atomic<RDBSE_TABLE_DEF*> slave_gtid_info;
 };
 
 
@@ -747,7 +777,7 @@ private:
   key: RDBSE_KEYDEF::BINLOG_INFO_INDEX_NUMBER (0x4)
   value: version, {binlog_name,binlog_pos,binlog_gtid}
 
-  5. Ongoing drop index entry (not implemented yet)
+  5. Ongoing drop index entry
   key: RDBSE_KEYDEF::DDL_DROP_INDEX_ONGOING(0x5) + cf_id + index_id
   value: version
 

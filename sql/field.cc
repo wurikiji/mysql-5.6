@@ -66,18 +66,31 @@ const char field_separator=',';
   and index of field in thia array.
 */
 #define FIELDTYPE_TEAR_FROM (MYSQL_TYPE_BIT + 1)
-#define FIELDTYPE_TEAR_TO   (MYSQL_TYPE_DOCUMENT - 1)
-#define FIELDTYPE_NUM (FIELDTYPE_TEAR_FROM + (255 - FIELDTYPE_TEAR_TO))
-
+#define FIELDTYPE_TEAR_TO   (MYSQL_TYPE_NEWDECIMAL - 1)
+// Add two document types in between TEAR_FROM and TEAR_TO
+#define FIELDTYPE_DOCUMENT_FROM (MYSQL_TYPE_DOCUMENT)
+#define FIELDTYPE_DOCUMENT_TO (MYSQL_TYPE_DOCUMENT_VALUE)
+#define DOCUMENT_TYPES_NUM \
+  FIELDTYPE_DOCUMENT_TO - FIELDTYPE_DOCUMENT_FROM + 1
+#define FIELDTYPE_NUM \
+  (FIELDTYPE_TEAR_FROM + DOCUMENT_TYPES_NUM + (255 - FIELDTYPE_TEAR_TO))
 
 inline int field_type2index (enum_field_types field_type)
 {
   field_type= real_type_to_type(field_type);
   DBUG_ASSERT(field_type < FIELDTYPE_TEAR_FROM ||
-              field_type > FIELDTYPE_TEAR_TO);
-  return (field_type < FIELDTYPE_TEAR_FROM ?
-          field_type :
-          ((int)FIELDTYPE_TEAR_FROM) + (field_type - FIELDTYPE_TEAR_TO) - 1);
+              field_type > FIELDTYPE_TEAR_TO ||
+              (field_type >= FIELDTYPE_DOCUMENT_FROM &&
+              field_type <= FIELDTYPE_DOCUMENT_TO));
+
+  if (field_type >= FIELDTYPE_DOCUMENT_FROM &&
+      field_type <= FIELDTYPE_DOCUMENT_TO)
+    return FIELDTYPE_TEAR_FROM + (field_type - FIELDTYPE_DOCUMENT_FROM);
+
+  return (field_type < FIELDTYPE_TEAR_FROM
+              ? field_type
+              : ((int)FIELDTYPE_TEAR_FROM + DOCUMENT_TYPES_NUM) +
+                    (field_type - FIELDTYPE_TEAR_TO) - 1);
 }
 const char *gen_document_path_full_name(
   MEM_ROOT *mem_root,
@@ -6828,19 +6841,8 @@ Field_string::store(const char *from,uint length,const CHARSET_INFO *cs)
   /* Append spaces if the string was shorter than the field. */
   if (copy_length < field_length)
   {
-    /*
-      Here if it's from the index we use 0x20 as the padding.
-      Now when there is an index on Field_document for type
-      string, 0x20 will be used as the padding. It's not good,
-      because, now we have to get the data from the original
-      data which is not efficient. Actually, if using zero as
-      the paddings, it should be faster because we don't need
-      to get it from the original data. Need to be fixed.
-    */
     field_charset->cset->fill(field_charset,(char*) ptr+copy_length,
                               field_length-copy_length,
-                              document_key_field ?
-                              0x20 :
                               field_charset->pad_char);
   }
 
@@ -8887,19 +8889,12 @@ type_conversion_status Field_document::reset(void)
 {
     if(!is_derived_document_field())
     {
-      /* When not nullable, set document field to {} */
-      if (!real_maybe_null()) {
-        set_notnull();
-        store(NON_NULL_DEFAULT_DOCUMENT, 2, &my_charset_bin);
-        return TYPE_OK;
-      }
-
       type_conversion_status res= Field_blob::reset();
       if (res != TYPE_OK)
         return res;
-      return maybe_null() && nullable_document
-        ? TYPE_OK
-        : TYPE_ERR_NULL_CONSTRAINT_VIOLATION;
+      // document column is always nullable
+      DBUG_ASSERT(maybe_null());
+      return maybe_null() ? TYPE_OK : TYPE_ERR_NULL_CONSTRAINT_VIOLATION;
     }
     else
     {
@@ -8950,12 +8945,8 @@ Field_document::update_json(const fbson::FbsonValue *val,
       {
         set_null();
         memset(ptr, 0, Field_blob::pack_length());
-        push_warning_invalid(json);
       }
-      else
-      {
-        push_error_invalid(json);
-      }
+      push_error_invalid(json);
       return TYPE_ERR_BAD_VALUE;
     }
     if(value.realloc(val->numPackedBytes() +
@@ -8965,11 +8956,10 @@ Field_document::update_json(const fbson::FbsonValue *val,
     }
     value.length(val->numPackedBytes() +
                  sizeof(fbson::FbsonDocument::FbsonHeader));
-    fbson::FbsonDocument *doc =
-      fbson::FbsonDocument::makeDocument(value.c_ptr(),
-                                         value.length(),
-                                         val->type());
-    doc->setValue(val);
+    if (nullptr ==
+        fbson::FbsonDocument::makeDocument(value.c_ptr(), value.length(), val))
+      DBUG_ASSERT(0);
+
     return Field_blob::store_internal(value.ptr(),
                                       value.length(),
                                       cs);
@@ -8989,7 +8979,28 @@ Field_document::update_json(const fbson::FbsonValue *val,
     fbson::FbsonDocument *doc =
       fbson::FbsonDocument::createDocument(blob, value.length());
 
-    DBUG_ASSERT(doc);
+    // Build the document path and set the value. This may happen from
+    // call save_value_and_handle_conversion() during range optimizations
+    // for example 'where t.doc.int > 5'
+    if (!doc) {
+      DBUG_ASSERT(update_args == nullptr);
+      // If val is nullptr, which means deletion,
+      // or if update is only allowed with "IF EXISTS" argument.
+      if ((val == nullptr) ||
+          (from->update_args && from->update_args->exist_type ==
+           Save_in_field_args::CheckType::CHECK_EXISTS))
+      {
+        return TYPE_ERR_BAD_VALUE;
+      }
+
+      fbson::FbsonWriter writer;
+      Document_path_iterator path = key_path;
+      path++;
+      const fbson::FbsonValue *v = build_path(path, writer, val,
+                                              fbson::FbsonType::T_Object);
+      Document_path_iterator p(this);
+      return update_json(v, cs, p, this);
+    }
 
     fbson::FbsonUpdater updater(doc, buffer_len);
     Document_path_iterator path = key_path;
@@ -9069,6 +9080,7 @@ Field_document *Field_document::new_field(MEM_ROOT *root,
     append_key_path(new_one->prefix_document_key_path,
                     document_key_path);
   new_one->doc_type = doc_type;
+  new_one->key_len = key_len;
   new_one->prefix_path_num = prefix_path_num + document_key_path.elements;
   return new_one;
 }
@@ -9079,31 +9091,6 @@ Field_document::sql_type(String &res) const
   const CHARSET_INFO *cs= &my_charset_latin1;
   res.set(STRING_WITH_LEN("document"), cs);
 }
-
-
-void
-Field_document::push_warning_invalid(const char *from,
-    const fbson::FbsonErrInfo *err_info)
-{
-  push_warning_printf(table->in_use, Sql_condition::WARN_LEVEL_WARN,
-                      ER_INVALID_VALUE_FOR_DOCUMENT_FIELD,
-                      ER(ER_INVALID_VALUE_FOR_DOCUMENT_FIELD),
-                      field_name, (ulong) table->in_use->get_stmt_da()->
-                                            current_row_for_warning(),
-                      from, err_info? err_info->err_pos : 0,
-                      err_info? err_info->err_msg : "Invalid document");
-}
-
-
-void
-Field_document::push_warning_too_big()
-{
-  push_warning_printf(table->in_use, Sql_condition::WARN_LEVEL_WARN,
-                      ER_TOO_BIG_DOCUMENT_FIELDLENGTH,
-                      ER(ER_TOO_BIG_DOCUMENT_FIELDLENGTH),
-                      field_name, max_data_length());
-}
-
 
 void
 Field_document::push_error_invalid(const char *from,
@@ -9117,7 +9104,6 @@ Field_document::push_error_invalid(const char *from,
     sprintf(buffer, "Invalid document value: '%.64s'", from);
   my_message(ER_INVALID_VALUE_FOR_DOCUMENT_FIELD, buffer, MYF(0));
 }
-
 
 void
 Field_document::push_error_too_big()
@@ -9172,6 +9158,7 @@ Field_document::store(double nr)
   return real_field()->
     update_json(creater(nr), charset(), path, this);
 }
+
 // prepare the buffer in value
 type_conversion_status
 Field_document::prepare_update(const CHARSET_INFO *cs,
@@ -9183,15 +9170,25 @@ Field_document::prepare_update(const CHARSET_INFO *cs,
   */
   DBUG_ASSERT(this == real_field());
 
-  // Null column can't use partial update.
+  // New document will be created and the document path
+  // will be built for partial update for null column
+  // if argument CHECK_EXISTS is not specified, i.e.,
+  // the argument is CHECK_NONE or CHECK_NOTEXISTS.
   char *blob = nullptr;
   memcpy(&blob,
          ptr + packlength,
          sizeof(char*));
-  if(is_null() || nullptr == blob)
+  if(nullptr == blob)
   {
-    set_null();
-    return TYPE_ERR_BAD_VALUE;
+    // Allocate memory if it is not allocated yet. It will
+    // be reallocated later if it is not big enough.
+    if(value.alloc(128)) {
+      *buff = nullptr;
+      return TYPE_ERR_OOM;
+    }
+    memset(value.c_ptr(), 0, value.alloced_length());
+    *buff = value.c_ptr();
+    return TYPE_OK;
   }
 
   // If the buffer has been allocated, then it's fine.
@@ -9201,6 +9198,8 @@ Field_document::prepare_update(const CHARSET_INFO *cs,
     *buff = blob;
     return TYPE_OK;
   }
+
+  // Otherwise, allocate the buffer.
   int len = get_length(ptr);
   if(value.realloc(len * 2)){
     *buff = nullptr;
@@ -9244,16 +9243,8 @@ Field_document::store_decimal(const my_decimal *nr)
     char buf[DECIMAL_MAX_STR_LENGTH];
     String str(buf, sizeof (buf), &my_charset_bin);
     my_decimal2string(E_DEC_FATAL_ERROR, nr, 0, 0, 0, &str);
-    if(real_maybe_null())
-    {
-      set_null();
-      memset(ptr, 0, Field_blob::pack_length());
-      push_warning_invalid(str.c_ptr_safe());
-    }
-    else
-    {
-      push_error_invalid(str.c_ptr_safe());
-    }
+    // we always fail on invalid document, instead of storing a null
+    push_error_invalid(str.c_ptr_safe());
     return TYPE_ERR_BAD_VALUE;
   }
   double dbl;
@@ -9269,7 +9260,7 @@ Field_document::store_internal(const char *from, uint length,
   {
     if (real_maybe_null())
       set_null();
-    push_warning_invalid("");
+    push_error_invalid(from, nullptr);
     return TYPE_ERR_BAD_VALUE;
   }
 
@@ -9300,28 +9291,19 @@ Field_document::store_internal(const char *from, uint length,
   }
 
   /*
-     When a document value to be inserted is not valid or too big, if the field
-     cannot be NULL then the whole insertion will fail and errors will be
-     returned, if the field can be NULL then the insertion will succeed but the
-     field will be NULL and warnings will be returned.
-     Updates will fail anyway if the document value is not valid.
+     When a document value to be inserted/updated is not valid or too big, the
+     whole insertion will fail and errors will be returned
   */
   if (real_maybe_null())
   {
     set_null();
     memset(ptr, 0, Field_blob::pack_length());
-    if (valid)
-      push_warning_too_big();
-    else
-      push_warning_invalid(from, err_info.err_msg ? &err_info : nullptr);
   }
+  if (valid)
+    push_error_too_big();
   else
-  {
-    if (valid)
-      push_error_too_big();
-    else
-      push_error_invalid(from, err_info.err_msg ? &err_info : nullptr);
-  }
+    push_error_invalid(from, err_info.err_msg ? &err_info : nullptr);
+
   return TYPE_ERR_BAD_VALUE;
 }
 
@@ -9417,11 +9399,6 @@ fbson::FbsonValue *Field_document::val_document_value(
       val_buffer->copy((char*)fb_val, fb_val->numPackedBytes(), charset());
       return (fbson::FbsonValue*)val_buffer->ptr();
     }
-    case DOC_PATH_BLOB:
-      // Currently it's not supported
-      DBUG_ASSERT(false);
-      return nullptr;
-      break;
     case DOC_DOCUMENT:
       // Currently, index can't be on the document
     default:
@@ -9490,7 +9467,7 @@ bool extract_val_numeric(
 double Field_document::val_real(void)
 {
   ASSERT_COLUMN_MARKED_FOR_READ;
-  double r= DBL_MAX;
+  double r= 0.0;
   switch(real_doc_type())
   {
     case DOC_PATH_TINY:
@@ -9499,7 +9476,6 @@ double Field_document::val_real(void)
       r = (double)val_int();
       break;
     }
-    case DOC_PATH_BLOB:
     case DOC_PATH_STRING:
     {
       String str_buff;
@@ -9533,7 +9509,7 @@ double Field_document::val_real(void)
       memcpy(&blob, real->ptr + real->packlength, sizeof(char*));
       if(!blob)
       {
-        r = DBL_MAX;
+        r = 0.0;
       }else
       {
         r = *(double*)blob;
@@ -9547,7 +9523,7 @@ double Field_document::val_real(void)
         val_document_value(&val_buffer, &val_buffer);
       if(nullptr == pval ||
          !extract_val_numeric<double>(pval, r, charset(), table))
-        r = DBL_MAX;
+        r = 0.0;
       break;
     }
     default:
@@ -9580,10 +9556,9 @@ int64 Field_document::read_bigendian(char *src, unsigned len)
 longlong Field_document::val_int(void)
 {
   ASSERT_COLUMN_MARKED_FOR_READ;
-  longlong r = INT_MAX;
+  longlong r = 0;
   switch(real_doc_type())
   {
-    case DOC_PATH_BLOB:
     case DOC_PATH_STRING:
     {
       String str_buff;
@@ -9619,12 +9594,16 @@ longlong Field_document::val_int(void)
       memcpy(&blob, real->ptr + real->packlength, sizeof(char*));
       if(!blob)
       {
-        r = INT_MAX;
+        r = 0;
       }else
       {
-        if(DOC_PATH_INT == doc_type &&
-           real->orig_table->s->db_type()->db_type == DB_TYPE_INNODB)
-          r = read_bigendian(blob, sizeof(int64));
+        if (real->orig_table->s->db_type()->db_type == DB_TYPE_INNODB)
+        {
+          if (DOC_PATH_INT == doc_type)
+            r = read_bigendian(blob, sizeof(int64));
+          else // DOC_PATH_TINY
+            r = read_bigendian(blob, sizeof(char));
+        }
         else if(DOC_PATH_INT == doc_type)
           r = *(int64*)blob;
         else
@@ -9638,7 +9617,7 @@ longlong Field_document::val_int(void)
       fbson::FbsonValue *pval = val_document_value(&val_buffer, &val_buffer);
       if(nullptr == pval ||
          !extract_val_numeric<longlong>(pval, r, charset(), table))
-        r = INT_MAX;
+        r = 0;
       break;
     }
     default:
@@ -9662,7 +9641,7 @@ void Field_document::make_sort_key_as_type(uchar *buff,
   DBUG_ASSERT(buff && length > 0);
   memset(buff, 0, length);
   enum_field_types to_type = MYSQL_TYPE_DOCUMENT;
-  if(MYSQL_TYPE_UNKNOWN == as_type)
+  if(MYSQL_TYPE_DOCUMENT_UNKNOWN == as_type)
   {
     switch(doc_type)
     {
@@ -9715,7 +9694,7 @@ void Field_document::make_sort_key_as_type(uchar *buff,
 
 
 void Field_document::make_sort_key(uchar *buff, uint length){
-  return make_sort_key_as_type(buff, length, MYSQL_TYPE_UNKNOWN);
+  return make_sort_key_as_type(buff, length, MYSQL_TYPE_DOCUMENT_UNKNOWN);
 }
 
 String *Field_document::val_str(String *val_buffer,
@@ -9754,7 +9733,6 @@ String *Field_document::val_str(String *val_buffer,
       return val_buffer;
     }
     case DOC_PATH_STRING:
-    case DOC_PATH_BLOB:
     {
       Field_document *real = real_field();
       char *res_ptr = (char*)real->ptr;
@@ -9813,12 +9791,15 @@ bool Field_document::is_null_as_blob(my_ptrdiff_t row_offset) const{
 }
 
 bool Field_document::is_null(my_ptrdiff_t row_offset) const{
-  Field_document *real = const_cast<Field_document*>(this)->real_field();
-  if(real == this && Field_blob::is_null(row_offset))
+  // Check if the actual blob is null
+  if (is_null_as_blob(row_offset))
     return true;
+
+  // Check the actual data in the blob
   if(is_from_index())
   {
     char *blob = nullptr;
+    Field_document *real = const_cast<Field_document*>(this)->real_field();
     memcpy(&blob, real->ptr+packlength, sizeof(char*));
     if(nullptr == blob)
       return true;
@@ -9837,11 +9818,13 @@ Field_document::Field_document(MEM_ROOT *mem_root,
                                Field_document *document,
                                List<Document_key> &doc_path,
                                enum_field_types type,
-                               uint key_len):
+                               uint key_length):
     Field_document(*document)
 {
   DBUG_ASSERT(doc_path.elements > 0);
-  key_length = key_len;
+  key_len = key_length;
+  set_document_type(type);
+  DBUG_ASSERT(validate_doc_type());
   inner_field = document;
   document_key_path.empty();
   List_iterator<Document_key> it(doc_path);
@@ -9853,7 +9836,6 @@ Field_document::Field_document(MEM_ROOT *mem_root,
   field_name = gen_document_path_full_name(mem_root,
                                            document->field_name,
                                            document_key_path);
-  set_document_type(type);
 }
 Field_document::Field_document(MEM_ROOT *mem_root,
                                Field_document *document,
@@ -9886,7 +9868,8 @@ Field_document::Field_document(MEM_ROOT *mem_root,
       for(Document_key *p; (p=it++) && trie;)
         trie = trie->get(p->string, p->length);
 
-      if (trie && current_thd->mark_used_columns != MARK_COLUMNS_NONE)
+      if (trie && trie->key_type != MYSQL_TYPE_DOCUMENT_UNKNOWN &&
+          current_thd->mark_used_columns != MARK_COLUMNS_NONE)
       {
         /* we found the key. Merge the key's part_of_key map
          * with the field
@@ -9895,7 +9878,7 @@ Field_document::Field_document(MEM_ROOT *mem_root,
         table->merge_keys.merge(trie->part_of_key);
         set_document_type(trie->key_type);
         found_doc_idx = true;
-        key_length = trie->key_length;
+        key_len = trie->key_length;
       }
     }
 
@@ -9906,9 +9889,10 @@ Field_document::Field_document(MEM_ROOT *mem_root,
        */
       table->covering_keys.intersect(part_of_key);
       table->merge_keys.merge(part_of_key);
-      key_length = 0;
+      key_len = 0;
     }
   }
+  DBUG_ASSERT(validate_doc_type());
 }
 
 fbson::FbsonValue *Field_document::get_fbson_value()
@@ -9939,6 +9923,348 @@ fbson::FbsonValue *Field_document::get_fbson_value()
   }
   return nullptr;
 }
+
+/* The following is used only when comparing a key
+ * Return value: size of the key written to buff
+ *
+ * The helper functions (e.g. get_key_image_[int, double, bool, text]
+ * should be consistent with how document path index is extracted
+ * inside innodb (c.f. dict0dict.ic::dfield_set_document_path_data)
+ */
+uint Field_document::get_key_image(uchar *buff, uint length,
+                                   imagetype type_arg)
+{
+    memset(buff, 0, length);
+
+    fbson::FbsonValue *fb_val = get_fbson_value();
+    if (nullptr == fb_val)
+      return 0;
+
+    switch (doc_type)
+    {
+      case DOC_PATH_TINY:
+        if (length >= 1)
+          return get_key_image_bool(buff, fb_val);
+
+      case DOC_PATH_INT:
+        if (length >= sizeof(int64_t))
+          return get_key_image_int(buff, fb_val);
+
+      case DOC_PATH_DOUBLE:
+        if (length >= sizeof(double))
+          return get_key_image_double(buff, fb_val);
+
+      case DOC_PATH_STRING:
+        return get_key_image_text(buff, length, fb_val);
+
+      default:
+        break;
+    }
+    // should never reach here
+    DBUG_ASSERT(0);
+    return 0;
+}
+
+// get key image as int
+// Return value: size of the key written to buff
+uint Field_document::get_key_image_int(uchar *buff, fbson::FbsonValue *pval)
+{
+  DBUG_ASSERT(pval);
+
+  int64_t &val = *(int64_t*)buff;
+  if (pval->type() == fbson::FbsonType::T_String)
+  {
+    const char* start = pval->getValuePtr();
+    char* end = (char*)start + pval->size();
+    int error;
+    val = my_strtoll10(start, &end, &error);
+    if (error == ERANGE || error == EDOM)
+    {
+      val = 0;
+      return 0;
+    }
+    return sizeof(int64_t);
+  }
+  return get_key_image_numT(val, pval);
+}
+
+// get key image as double
+// Return value: size of the key written to buff
+uint Field_document::get_key_image_double(uchar *buff, fbson::FbsonValue *pval)
+{
+  DBUG_ASSERT(pval);
+
+  double &val = *(double*)buff;
+  if (pval->type() == fbson::FbsonType::T_String)
+  {
+    const char* start = pval->getValuePtr();
+    char* end = (char*)start + pval->size();
+    int error;
+    val = my_strtod(start, &end, &error);
+    if (error == OVERFLOW)
+    {
+      val = 0;
+      return 0;
+    }
+
+    return sizeof(double);
+  }
+
+  return get_key_image_numT(val, pval);
+}
+
+// get key image as boolean
+// Return value: size of the key written to buff
+uint Field_document::get_key_image_bool(uchar *buff, fbson::FbsonValue *pval)
+{
+  DBUG_ASSERT(pval);
+  int8_t &val = *(int8_t*)buff;
+  switch (pval->type())
+  {
+    case fbson::FbsonType::T_True:
+      val = 1;
+      break;
+    case fbson::FbsonType::T_False:
+      val = 0;
+      break;
+    case fbson::FbsonType::T_Int8:
+      val = (((fbson::Int8Val *)pval)->val() != 0);
+      break;
+    case fbson::FbsonType::T_Int16:
+      val = (((fbson::Int16Val *)pval)->val() != 0);
+      break;
+    case fbson::FbsonType::T_Int32:
+      val = (((fbson::Int32Val *)pval)->val() != 0);
+      break;
+    case fbson::FbsonType::T_Int64:
+      val = (((fbson::Int64Val *)pval)->val() != 0);
+      break;
+    case fbson::FbsonType::T_Double:
+      val = (((fbson::DoubleVal *)pval)->val() != 0);
+      break;
+    case fbson::FbsonType::T_String:
+      {
+        int8_t retval = ((fbson::StringVal *)pval)->getBoolVal();
+        if (retval < 0)
+          return 0;
+        else
+          val = retval;
+      }
+      break;
+
+    default:
+      return 0;
+  }
+  return 1;
+}
+
+// get key image as string
+// Return value: size of the key written to buff
+uint Field_document::get_key_image_text(uchar *buff, uint length,
+                               fbson::FbsonValue *pval)
+{
+  DBUG_ASSERT(pval);
+
+  char *p = NULL;
+  uint copy_len = 0;
+  char local_buf[64];
+  switch (pval->type())
+  {
+    case fbson::FbsonType::T_Int8:
+      longlong2str(((fbson::Int8Val *)pval)->val(), local_buf, -10);
+      break;
+    case fbson::FbsonType::T_Int16:
+      longlong2str(((fbson::Int16Val *)pval)->val(), local_buf, -10);
+      break;
+    case fbson::FbsonType::T_Int32:
+      longlong2str(((fbson::Int32Val *)pval)->val(), local_buf, -10);
+      break;
+    case fbson::FbsonType::T_Int64:
+      longlong2str(((fbson::Int64Val *)pval)->val(), local_buf, -10);
+      break;
+    case fbson::FbsonType::T_Double:
+      sprintf(local_buf, "%.16g", ((fbson::DoubleVal *)pval)->val());
+      break;
+    case fbson::FbsonType::T_String:
+    case fbson::FbsonType::T_Binary:
+    {
+      copy_len = min<uint>(length, pval->size());
+      p = (char *)pval->getValuePtr();
+      break;
+    }
+    case fbson::FbsonType::T_True:
+      longlong2str(1, local_buf, -10);
+      break;
+    case fbson::FbsonType::T_False:
+      longlong2str(0, local_buf, -10);
+      break;
+
+    default:
+      // should never reach here
+      DBUG_ASSERT(0);
+      return 0;
+  }
+
+  // It is not from string
+  if (p == NULL)
+  {
+    DBUG_ASSERT(copy_len == 0);
+    copy_len = strlen(local_buf);
+    p = local_buf;
+  }
+
+  uint local_char_len = copy_len / field_charset->mbmaxlen;
+  local_char_len = my_charpos(field_charset, p, p+copy_len, local_char_len);
+  set_if_smaller(copy_len, local_char_len);
+
+  // Key length is always stored with 2 bytes
+  int2store(buff, copy_len);
+  memcpy(buff+HA_KEY_BLOB_LENGTH, p, copy_len);
+  if (copy_len < length)
+  {
+    // Must clear this as we do a memcmp in opt_range.cc
+    // to detect identical keys
+    memset(buff+HA_KEY_BLOB_LENGTH+copy_len, 0, (length-copy_len));
+  }
+  return (HA_KEY_BLOB_LENGTH + copy_len);
+}
+
+// Templated helper for get_key_image_[int, double]
+// Return value: size of the key written to buff
+template <class T>
+uint Field_document::get_key_image_numT(T &val, fbson::FbsonValue *pval)
+{
+  DBUG_ASSERT(pval);
+
+  switch (pval->type())
+  {
+    case fbson::FbsonType::T_True:
+      val = 1;
+      break;
+    case fbson::FbsonType::T_False:
+      val = 0;
+      break;
+    case fbson::FbsonType::T_Int8:
+      val = (T)((fbson::Int8Val *)pval)->val();
+      break;
+    case fbson::FbsonType::T_Int16:
+      val = (T)((fbson::Int16Val *)pval)->val();
+      break;
+    case fbson::FbsonType::T_Int32:
+      val = (T)((fbson::Int32Val *)pval)->val();
+      break;
+    case fbson::FbsonType::T_Int64:
+      val = (T)((fbson::Int64Val *)pval)->val();
+      break;
+    case fbson::FbsonType::T_Double:
+      val = (T)((fbson::DoubleVal *)pval)->val();
+      break;
+    default:
+      // should never reach here
+      DBUG_ASSERT(0);
+      return 0;
+  }
+  return sizeof(T);
+}
+
+int Field_document::key_cmp(const uchar *x, const uchar*y)
+{
+  switch (doc_type) {
+  case DOC_PATH_TINY:
+    {
+      int8_t a = *(char*)x;
+      int8_t b = *(char*)y;
+      return (a < b ? -1 : (a > b ? 1 : 0));
+    }
+  case DOC_PATH_INT:
+    {
+      int64_t a = *(int64_t*)x;
+      int64_t b = *(int64_t*)y;
+      return (a < b ? -1 : (a > b ? 1 : 0));
+    }
+  case DOC_PATH_DOUBLE:
+    {
+      double a = *(double*)x;
+      double b = *(double*)y;
+      return (a < b ? -1 : (a > b ? 1 : 0));
+    }
+  case DOC_PATH_STRING:
+    return field_charset->coll->strnncollsp(field_charset,
+                                            x + HA_KEY_BLOB_LENGTH,
+                                            uint2korr(x),
+                                            y + HA_KEY_BLOB_LENGTH,
+                                            uint2korr(y), 0);
+  default:
+    break;
+  }
+  // should never reach here
+  DBUG_ASSERT(0);
+  return 0;
+}
+
+int Field_document::key_cmp(const uchar *key_ptr,
+                            uint max_key_length)
+{
+    switch (doc_type) {
+    case DOC_PATH_TINY:
+      DBUG_ASSERT(max_key_length >= 1);
+      if (max_key_length >= 1)
+      {
+        // Raw value in MySQL little endian format
+        int8_t k = *(int8_t*)key_ptr;
+        // Raw value in InnoDB big endian format is stored in document blob
+        int64_t x = this->val_int();
+        return (x < k ? -1 : (x > k ? 1 : 0));
+      }
+
+    case DOC_PATH_INT:
+      DBUG_ASSERT(max_key_length >= sizeof(int64_t));
+      if (max_key_length >= sizeof(int64_t))
+      {
+        int64_t k = *(int64_t*)key_ptr;
+        int64_t x = this->val_int();
+        return (x < k ? -1 : (x > k ? 1 : 0));
+      }
+
+    case DOC_PATH_DOUBLE:
+      DBUG_ASSERT(max_key_length >= sizeof(double));
+      if (max_key_length >= sizeof(double))
+      {
+        double k = *(double*)key_ptr;
+        double x = this->val_real();
+        return (x < k ? -1 : (x > k ? 1 : 0));
+      }
+
+    case DOC_PATH_STRING:
+      {
+        String val, ptr;
+        String *x = this->val_str(&val, &ptr);
+        if (x && x->ptr() && key_ptr)
+        {
+          const uchar* p = (const uchar*)x->ptr();
+          uint len = x->length();
+          uint local_char_len = max_key_length / field_charset->mbmaxlen;
+          local_char_len = my_charpos(field_charset, p, p+len, local_char_len);
+          set_if_smaller(len, local_char_len);
+          return field_charset->coll->strnncollsp(field_charset, p, len,
+                                                  key_ptr + HA_KEY_BLOB_LENGTH,
+                                                  uint2korr(key_ptr), 0);
+        }
+      }
+    default:
+      break;
+    }
+    // should never reach here
+    DBUG_ASSERT(0);
+    return 0;
+}
+
+uint32 Field_document::key_length() const
+{
+  DBUG_ASSERT(validate_doc_type());
+  return key_len;
+}
+
 
 /****************************************************************************
 ** enum type.
@@ -11352,7 +11678,6 @@ bool Create_field::init(THD *thd, const char *fld_name,
   field_name= fld_name;
   flags= fld_type_modifier;
   charset= fld_charset;
-  nullable_document = false;
 
   const bool on_update_is_function=
     (fld_on_update_value != NULL &&
@@ -11409,16 +11734,6 @@ bool Create_field::init(THD *thd, const char *fld_name,
   interval_list.empty();
 
   comment= *fld_comment;
-
-  /* Set document field nullable, and save real nullability */
-  if (fld_type == MYSQL_TYPE_DOCUMENT)
-  {
-    // document path is always nullable internally and we save the field
-    // nullability definition in nullable_document
-    nullable_document = !(fld_type_modifier & NOT_NULL_FLAG);
-    flags &= ~NOT_NULL_FLAG;
-  }
-
   /*
     Set NO_DEFAULT_VALUE_FLAG if this field doesn't have a default value and
     it is NOT NULL and not an AUTO_INCREMENT field.
@@ -11510,7 +11825,7 @@ bool Create_field::init(THD *thd, const char *fld_name,
     break;
   case MYSQL_TYPE_STRING:
     break;
-  case MYSQL_TYPE_UNKNOWN:
+  case MYSQL_TYPE_DOCUMENT_UNKNOWN:
     DBUG_ASSERT(0);
     break;
   case MYSQL_TYPE_DOCUMENT_VALUE:
@@ -11811,8 +12126,7 @@ Field *make_field(TABLE_SHARE *share, uchar *ptr, uint32 field_length,
 		  Field::geometry_type geom_type,
 		  Field::utype unireg_check,
 		  TYPELIB *interval,
-		  const char *field_name,
-      bool nullable_document)
+		  const char *field_name)
 {
   uchar *UNINIT_VAR(bit_ptr);
   uchar UNINIT_VAR(bit_offset);
@@ -11883,8 +12197,7 @@ Field *make_field(TABLE_SHARE *share, uchar *ptr, uint32 field_length,
     if (f_is_document(pack_flag))
       return new Field_document(ptr,null_pos,null_bit,
                                 unireg_check, field_name, share,
-                                pack_length,
-                                nullable_document);
+                                pack_length);
 
     if (f_is_blob(pack_flag))
       return new Field_blob(ptr,null_pos,null_bit,
@@ -12065,7 +12378,6 @@ Create_field::Create_field(Field *old_field,Field *orig_field) :
 #endif
   case MYSQL_TYPE_DOCUMENT:
     document_type= ((Field_document*)old_field)->doc_type;
-    nullable_document = ((Field_document*)old_field)->nullable_document;
     break;
   case MYSQL_TYPE_YEAR:
     if (length != 4)

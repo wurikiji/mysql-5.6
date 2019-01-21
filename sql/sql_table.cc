@@ -5610,7 +5610,7 @@ err:
 /* table_list should contain just one table */
 int mysql_discard_or_import_tablespace(THD *thd,
                                        TABLE_LIST *table_list,
-                                       bool discard)
+                                       uint discard)
 {
   Alter_table_prelocking_strategy alter_prelocking_strategy;
   int error;
@@ -7439,8 +7439,7 @@ mysql_prepare_alter_table(THD *thd, TABLE *table,
         DBUG_ASSERT((type == MYSQL_TYPE_LONGLONG && len == 8) ||
                     (type == MYSQL_TYPE_DOUBLE && len == 8) ||
                     (type == MYSQL_TYPE_TINY && len == 1) ||
-                    (type == MYSQL_TYPE_STRING) ||
-                    (type == MYSQL_TYPE_BLOB));
+                    (type == MYSQL_TYPE_STRING));
 
         Document_path_key_spec_type dp_spec_type(type, len);
 
@@ -8092,7 +8091,8 @@ remove_secondary_keys(THD *thd, HA_CREATE_INFO* create_info, TABLE *table,
   }
 
   Alter_inplace_info ha_alter_info(create_info, &alter_info_new,
-                                     table->key_info, table->s->keys,
+                                     alter_info->delayed_key_info,
+                                     table->s->keys,
 #ifdef WITH_PARTITION_STORAGE_ENGINE
                                      thd->work_part_info,
 #else

@@ -35,6 +35,7 @@
 class THD;
 struct handlerton;
 class Time_zone;
+class AC;
 
 struct scheduler_functions;
 
@@ -190,6 +191,7 @@ private:
   lsn_map **maps;
 };
 
+extern AC* db_ac;
 /*
   This forward declaration is used from C files where the real
   definition is included before.  Since C does not allow repeated
@@ -726,6 +728,7 @@ extern ulong table_cache_size_per_instance, table_cache_instances;
 extern MYSQL_PLUGIN_IMPORT ulong max_connections;
 extern ulong max_digest_length;
 extern ulong max_connect_errors, connect_timeout;
+extern ulong opt_max_running_queries, opt_max_waiting_queries;
 extern my_bool opt_slave_allow_batching;
 extern my_bool allow_slave_start;
 extern LEX_CSTRING reason_slave_blocked;
@@ -779,9 +782,19 @@ enum enum_gtid_mode
   /// Support only GTIDs, not anonymous groups.
   GTID_MODE_ON= 3
 };
+
+enum enum_slave_gtid_info
+{
+  SLAVE_GTID_INFO_OFF= 0,
+  SLAVE_GTID_INFO_ON= 1,
+  SLAVE_GTID_INFO_OPTIMIZED= 2
+};
+
 extern ulong gtid_mode;
+extern ulong slave_gtid_info;
 extern bool enable_gtid_mode_on_new_slave_with_old_master;
 extern const char *gtid_mode_names[];
+extern const char *slave_gtid_info_names[];
 extern TYPELIB gtid_mode_typelib;
 
 extern ulong max_blocked_pthreads;
@@ -852,6 +865,7 @@ extern ulonglong total_query_rejected, write_query_rejected;
 extern int32 write_query_running;
 extern my_atomic_rwlock_t write_query_running_lock;
 extern ulonglong tmp_table_rpl_max_file_size;
+extern ulonglong tmp_table_bytes_written;
 
 /** The size of the host_cache. */
 extern uint host_cache_size;
@@ -998,6 +1012,8 @@ void end_ssl();
   MAINTAINER: Please keep this list in order, to limit merge collisions.
   Hint: grep PSI_stage_info | sort -u
 */
+extern PSI_stage_info stage_admission_control_enter;
+extern PSI_stage_info stage_admission_control_exit;
 extern PSI_stage_info stage_after_create;
 extern PSI_stage_info stage_allocating_local_table;
 extern PSI_stage_info stage_alter_inplace_prepare;
@@ -1079,6 +1095,7 @@ extern PSI_stage_info stage_upgrading_lock;
 extern PSI_stage_info stage_user_lock;
 extern PSI_stage_info stage_user_sleep;
 extern PSI_stage_info stage_verifying_table;
+extern PSI_stage_info stage_waiting_for_admission;
 extern PSI_stage_info stage_waiting_for_commit;
 extern PSI_stage_info stage_waiting_for_delay_list;
 extern PSI_stage_info stage_waiting_for_gtid_to_be_written_to_binary_log;

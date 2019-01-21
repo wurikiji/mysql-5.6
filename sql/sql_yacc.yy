@@ -2177,6 +2177,7 @@ END_OF_INPUT
 %type <is_not_empty> opt_union_order_or_limit
 
 %type <num> read_only_opt boolean_val
+%type <num> opt_discard_tablespace
 %%
 
 /*
@@ -7613,15 +7614,6 @@ key_part_type:
             }
             $$ = new Document_path_key_spec_type(MYSQL_TYPE_STRING, len);
           }
-        | BINARY '(' NUM ')'
-          {
-            int len= atoi($3.str);
-            if (!len)
-            {
-              my_error(ER_KEY_PART_0, MYF(0), $3.str);
-            }
-            $$ = new Document_path_key_spec_type(MYSQL_TYPE_BLOB, len);
-          }
           /* Make sure to handle new types in store_create_info */
         ;
 
@@ -7937,11 +7929,12 @@ ident_or_empty:
 
 alter_commands:
           /* empty */
-        | DISCARD TABLESPACE
+        | DISCARD TABLESPACE opt_discard_tablespace
           {
             Lex->m_sql_cmd= new (YYTHD->mem_root)
-              Sql_cmd_discard_import_tablespace(
-                Sql_cmd_discard_import_tablespace::DISCARD_TABLESPACE);
+              Sql_cmd_discard_import_tablespace($3?
+                Sql_cmd_discard_import_tablespace::DISCARD_TABLESPACE_FAST
+              : Sql_cmd_discard_import_tablespace::DISCARD_TABLESPACE);
             if (Lex->m_sql_cmd == NULL)
               MYSQL_YYABORT;
           }
@@ -8076,6 +8069,11 @@ alter_commands:
             if (lex->m_sql_cmd == NULL)
               MYSQL_YYABORT;
           }
+        ;
+
+opt_discard_tablespace:
+          /* empty */ { $$ = 0; }
+        | FAST_SYM { $$ = 1; }
         ;
 
 remove_partitioning:
@@ -11971,7 +11969,7 @@ order_clause:
 order_as_type:
           /* empty */
           {
-            $$ = MYSQL_TYPE_UNKNOWN;
+            $$ = MYSQL_TYPE_DOCUMENT_UNKNOWN;
           }
         | AS INT_SYM { $$ = MYSQL_TYPE_LONGLONG; }
         | AS DOUBLE_SYM { $$ = MYSQL_TYPE_DOUBLE; }

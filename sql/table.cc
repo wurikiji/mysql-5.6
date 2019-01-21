@@ -832,12 +832,22 @@ void KEY_PART_INFO::init_from_field(Field *fld)
      document field since key part only can be built
      on a document path with a primary type
   */
+  bool is_string_type_document_key = false;
+  if (field->type() == MYSQL_TYPE_DOCUMENT)
+  {
+    /* a document field is always nullable */
+    DBUG_ASSERT(field->real_maybe_null());
+
+    is_string_type_document_key =
+      ((Field_document*)field)->is_doc_type_string();
+  }
 
   if (field->real_maybe_null())
     store_length+= HA_KEY_NULL_LENGTH;
   if (field->type() == MYSQL_TYPE_BLOB ||
       field->real_type() == MYSQL_TYPE_VARCHAR ||
-      field->type() == MYSQL_TYPE_GEOMETRY)
+      field->type() == MYSQL_TYPE_GEOMETRY ||
+      is_string_type_document_key)
   {
     store_length+= HA_KEY_BLOB_LENGTH;
   }
@@ -1318,9 +1328,6 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
           break;
         case 'S':
           type = MYSQL_TYPE_STRING;
-          break;
-        case 'B':
-          type = MYSQL_TYPE_BLOB;
           break;
         default:
           type = MYSQL_TYPE_NULL;
@@ -1826,7 +1833,6 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
     const CHARSET_INFO *charset=NULL;
     Field::geometry_type geom_type= Field::GEOM_GEOMETRY;
     LEX_STRING comment;
-    bool nullable_document = false;
 
     if (new_frm_ver >= 3)
     {
@@ -1836,7 +1842,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
       pack_flag=    uint2korr(strpos+8);
       unireg_type=  (uint) strpos[10];
       interval_nr=  (uint) strpos[12];
-      uint comment_length=uint2korr(strpos+15);;
+      uint comment_length=uint2korr(strpos+15);
       field_type=(enum_field_types) (uint) strpos[13];
 
       /* charset and geometry_type share the same byte in frm */
@@ -1862,16 +1868,6 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
           goto err;
         }
       }
-      /* if this is a document column, we will save the actual nullability in
-       * the nullable_document flag, and set the pack_flag to be nullable. The
-       * document field in memory is always nullable.
-       */
-      if (field_type == MYSQL_TYPE_DOCUMENT)
-      {
-        nullable_document = f_maybe_null(pack_flag);
-        pack_flag |= FIELDFLAG_MAYBE_NULL;
-      }
-
       if (!comment_length)
       {
         comment.str= (char*) "";
@@ -1964,8 +1960,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
 		 (interval_nr ?
 		  share->intervals+interval_nr-1 :
 		  (TYPELIB*) 0),
-		 share->fieldnames.type_names[i],
-		 nullable_document);
+		 share->fieldnames.type_names[i]);
     if (!reg_field)				// Not supported field type
     {
       error= 4;
@@ -2096,7 +2091,7 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
         field= key_part->field= share->field[key_part->fieldnr-1];
         key_part->type= field->key_type();
 
-        /* sanity check for document path key part */
+        bool is_string_type_document_key = false;
         if (field->type() == MYSQL_TYPE_DOCUMENT)
         {
           /* since a field with document type cannot be a key part
@@ -2107,11 +2102,15 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
                    field->field_name) == 0);
           /* the document path flag has been removed */
           DBUG_ASSERT(f_is_document(key_part->key_type));
+
+          /* a document field is always nullable */
+          DBUG_ASSERT(field->real_maybe_null());
+
+          is_string_type_document_key =
+            (key_part->document_path_key_part->type == MYSQL_TYPE_STRING);
         }
 
-        /* When field is a document, a doc path can always be nullable so the
-         * null bit and other flags should still be set */
-        if (field->type() == MYSQL_TYPE_DOCUMENT || field->real_maybe_null())
+        if (field->real_maybe_null())
         {
           key_part->null_offset=field->null_offset(share->default_values);
           key_part->null_bit= field->null_bit;
@@ -2119,14 +2118,10 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
           keyinfo->flags|=HA_NULL_PART_KEY;
           keyinfo->key_length+= HA_KEY_NULL_LENGTH;
         }
-        /* We need to check the document path key type,
-         * if it is blob key type, the key part's store_length
-         * needs to be modified. */
         if (field->type() == MYSQL_TYPE_BLOB ||
             field->real_type() == MYSQL_TYPE_VARCHAR ||
             field->type() == MYSQL_TYPE_GEOMETRY ||
-            (field->type() == MYSQL_TYPE_DOCUMENT &&
-             key_part->document_path_key_part->type == MYSQL_TYPE_BLOB))
+            is_string_type_document_key)
         {
           key_part->store_length+=HA_KEY_BLOB_LENGTH;
           if (i + 1 <= keyinfo->user_defined_key_parts)
@@ -2143,24 +2138,14 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
           field->flags|= PRI_KEY_FLAG;
 
           /*
-            LevelDB & RocksDB SE: we need to re-read to get correct value of
-            HA_PRIMARY_KEY_IN_READ_INDEX
+            "if (ha_option & HA_PRIMARY_KEY_IN_READ_INDEX)" ... was moved below
+            for MyRocks
           */
-          ha_option= handler_file->ha_table_flags();
-          /*
-            If this field is part of the primary key and all keys contains
-            the primary key, then we can use any key to find this column
-          */
-          if (ha_option & HA_PRIMARY_KEY_IN_READ_INDEX)
-          {
-            if (field->key_length() == key_part->length &&
-                !(field->flags & BLOB_FLAG))
-              field->part_of_key= share->keys_in_use;
-            if (field->part_of_sortkey.is_set(key))
-              field->part_of_sortkey= share->keys_in_use;
-          }
         }
-        if (field->key_length() != key_part->length)
+
+        /* key_length() of document fields don't provide the length of keys */
+        if (field->key_length() != key_part->length &&
+            field->type() != MYSQL_TYPE_DOCUMENT)
         {
 #ifndef TO_BE_DELETED_ON_PRODUCTION
           if (field->type() == MYSQL_TYPE_NEWDECIMAL)
@@ -2217,6 +2202,37 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
           (ha_option & HA_ANY_INDEX_MAY_BE_UNIQUE))
         set_if_bigger(share->max_unique_length,keyinfo->key_length);
     }
+
+    /*
+      The next call is here for MyRocks:  Now, we have filled in field and key
+      definitions, give the storage engine a chance to adjust its properties.
+
+      MyRocks may (and typically does) adjust HA_PRIMARY_KEY_IN_READ_INDEX
+      flag in this call.
+    */
+    if (handler_file->init_with_fields())
+      goto err;
+
+    if (primary_key < MAX_KEY && (handler_file->ha_table_flags() &
+                                  HA_PRIMARY_KEY_IN_READ_INDEX))
+    {
+      keyinfo= &share->key_info[primary_key];
+      key_part= keyinfo->key_part;
+      for (i=0 ; i < keyinfo->user_defined_key_parts ; key_part++,i++)
+      {
+        Field *field= key_part->field;
+        /*
+          If this field is part of the primary key and all keys contains
+          the primary key, then we can use any key to find this column
+        */
+        if (field->key_length() == key_part->length &&
+            !(field->flags & BLOB_FLAG))
+          field->part_of_key= share->keys_in_use;
+        if (field->part_of_sortkey.is_set(primary_key))
+          field->part_of_sortkey= share->keys_in_use;
+      }
+    }
+
     if (primary_key < MAX_KEY &&
 	(share->keys_in_use.is_set(primary_key)))
     {

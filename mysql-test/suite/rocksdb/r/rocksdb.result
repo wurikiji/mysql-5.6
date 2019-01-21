@@ -6,6 +6,8 @@ drop table if exists t11,t12,t13,t14,t15,t16,t17,t18,t19,t20;
 drop table if exists t21,t22,t23,t24,t25,t26,t27,t28,t29;
 drop table if exists t30,t31,t32,t33,t34,t35,t36,t37,t38,t39;
 drop table if exists t40,t41,t42,t43,t44,t45,t46,t47,t48,t49;
+SET @ORIG_PAUSE_BACKGROUND_WORK = @@ROCKSDB_PAUSE_BACKGROUND_WORK;
+SET GLOBAL ROCKSDB_PAUSE_BACKGROUND_WORK = 1;
 #
 # Issue #1: Don't update indexes if index values have not changed
 #
@@ -75,7 +77,7 @@ id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
 1	SIMPLE	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Impossible WHERE noticed after reading const tables
 explain select * from t2 where a='abc';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	const	PRIMARY	PRIMARY	12	const	1	NULL
+1	SIMPLE	t2	const	PRIMARY	PRIMARY	12	const	#	NULL
 select * from t2 where a='abc';
 a	b
 abc	def
@@ -191,7 +193,7 @@ insert into t8 values
 # Delete by PK
 explain delete from t8 where a='three';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t8	range	PRIMARY	PRIMARY	12	const	1	Using where
+1	SIMPLE	t8	range	PRIMARY	PRIMARY	12	const	#	Using where
 delete from t8 where a='three';
 select * from t8;
 a	col1
@@ -281,8 +283,8 @@ j
 EXPLAIN
 SELECT * FROM t10, t11 WHERE i=j;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t10	index	PRIMARY	PRIMARY	4	NULL	1000	Using index
-1	SIMPLE	t11	eq_ref	PRIMARY	PRIMARY	4	test.t10.i	1	Using index
+1	SIMPLE	t10	index	PRIMARY	PRIMARY	4	NULL	#	Using index
+1	SIMPLE	t11	eq_ref	PRIMARY	PRIMARY	4	test.t10.i	#	Using index
 SELECT * FROM t10, t11 WHERE i=j;
 i	j
 1	1
@@ -523,21 +525,21 @@ insert into t30 values ('row3', 'row3-key', 'row3-data');
 explain
 select * from t30 where key1='row2-key';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	ref	key1	key1	18	const	1	Using where
+1	SIMPLE	t30	ref	key1	key1	18	const	#	Using where
 select * from t30 where key1='row2-key';
 pk	key1	col1
 row2	row2-key	row2-data
 explain 
 select * from t30 where key1='row1';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	ref	key1	key1	18	const	1	Using where
+1	SIMPLE	t30	ref	key1	key1	18	const	#	Using where
 # This will produce nothing:
 select * from t30 where key1='row1';
 pk	key1	col1
 explain
 select key1 from t30;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	ALL	NULL	NULL	NULL	NULL	1000	NULL
+1	SIMPLE	t30	ALL	NULL	NULL	NULL	NULL	#	NULL
 select key1 from t30;
 key1
 row1-key
@@ -564,10 +566,13 @@ insert into t30 values
 ('row3', 'row3-key', 'row3-data'),
 ('row4', 'row4-key', 'row4-data'),
 ('row5', 'row5-key', 'row5-data');
+analyze table t30;
+Table	Op	Msg_type	Msg_text
+test.t30	analyze	status	OK
 explain 
 select * from t30 where key1 <='row3-key';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	key1	key1	18	NULL	1	Using where
+1	SIMPLE	t30	range	key1	key1	18	NULL	#	Using where
 select * from t30 where key1 <='row3-key';
 pk	key1	col1
 row1	row1-key	row1-data
@@ -576,7 +581,7 @@ row3	row3-key	row3-data
 explain 
 select * from t30 where key1 between 'row2-key' and 'row4-key';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	key1	key1	18	NULL	1	Using where
+1	SIMPLE	t30	range	key1	key1	18	NULL	#	Using where
 select * from t30 where key1 between 'row2-key' and 'row4-key';
 pk	key1	col1
 row2	row2-key	row2-data
@@ -585,7 +590,7 @@ row4	row4-key	row4-data
 explain 
 select * from t30 where key1 in ('row2-key','row4-key');
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	key1	key1	18	NULL	2	Using where
+1	SIMPLE	t30	ALL	key1	NULL	NULL	NULL	#	Using where
 select * from t30 where key1 in ('row2-key','row4-key');
 pk	key1	col1
 row2	row2-key	row2-data
@@ -593,7 +598,7 @@ row4	row4-key	row4-data
 explain 
 select key1 from t30 where key1 in ('row2-key','row4-key');
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	key1	key1	18	NULL	2	Using where
+1	SIMPLE	t30	ALL	key1	NULL	NULL	NULL	#	Using where
 select key1 from t30 where key1 in ('row2-key','row4-key');
 key1
 row2-key
@@ -601,7 +606,7 @@ row4-key
 explain 
 select * from t30 where key1 > 'row1-key' and key1 < 'row4-key';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	key1	key1	18	NULL	1	Using where
+1	SIMPLE	t30	range	key1	key1	18	NULL	#	Using where
 select * from t30 where key1 > 'row1-key' and key1 < 'row4-key';
 pk	key1	col1
 row2	row2-key	row2-data
@@ -609,7 +614,7 @@ row3	row3-key	row3-data
 explain 
 select * from t30 order by key1 limit 3;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	index	NULL	key1	18	NULL	3	NULL
+1	SIMPLE	t30	index	NULL	key1	18	NULL	#	NULL
 select * from t30 order by key1 limit 3;
 pk	key1	col1
 row1	row1-key	row1-data
@@ -618,7 +623,7 @@ row3	row3-key	row3-data
 explain 
 select * from t30 order by key1 desc limit 3;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	index	NULL	key1	18	NULL	3	NULL
+1	SIMPLE	t30	index	NULL	key1	18	NULL	#	NULL
 select * from t30 order by key1 desc limit 3;
 pk	key1	col1
 row5	row5-key	row5-data
@@ -630,7 +635,7 @@ row3	row3-key	row3-data
 explain 
 select * from t30 where pk <='row3';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	PRIMARY	PRIMARY	18	NULL	1	Using where
+1	SIMPLE	t30	range	PRIMARY	PRIMARY	18	NULL	#	Using where
 select * from t30 where pk <='row3';
 pk	key1	col1
 row1	row1-key	row1-data
@@ -639,7 +644,7 @@ row3	row3-key	row3-data
 explain 
 select * from t30 where pk between 'row2' and 'row4';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	PRIMARY	PRIMARY	18	NULL	1	Using where
+1	SIMPLE	t30	range	PRIMARY	PRIMARY	18	NULL	#	Using where
 select * from t30 where pk between 'row2' and 'row4';
 pk	key1	col1
 row2	row2-key	row2-data
@@ -648,7 +653,7 @@ row4	row4-key	row4-data
 explain 
 select * from t30 where pk in ('row2','row4');
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	range	PRIMARY	PRIMARY	18	NULL	2	Using where
+1	SIMPLE	t30	range	PRIMARY	PRIMARY	18	NULL	#	Using where
 select * from t30 where pk in ('row2','row4');
 pk	key1	col1
 row2	row2-key	row2-data
@@ -656,7 +661,7 @@ row4	row4-key	row4-data
 explain 
 select * from t30 order by pk limit 3;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t30	index	NULL	PRIMARY	18	NULL	3	NULL
+1	SIMPLE	t30	index	NULL	PRIMARY	18	NULL	#	NULL
 select * from t30 order by pk limit 3;
 pk	key1	col1
 row1	row1-key	row1-data
@@ -865,17 +870,17 @@ rocksdb_bulk_load	OFF
 rocksdb_bulk_load_size	1000
 rocksdb_bytes_per_sync	0
 rocksdb_cache_index_and_filter_blocks	ON
-rocksdb_cf_options_file	
 rocksdb_checksums_pct	100
 rocksdb_collect_sst_properties	ON
 rocksdb_compact_cf	
 rocksdb_compaction_sequential_deletes	1900
 rocksdb_compaction_sequential_deletes_file_size	0
 rocksdb_compaction_sequential_deletes_window	2000
+rocksdb_create_checkpoint	
 rocksdb_create_if_missing	ON
 rocksdb_create_missing_column_families	OFF
+rocksdb_datadir	./.rocksdb
 rocksdb_db_write_buffer_size	0
-rocksdb_debug_optimizer_n_rows	1000
 rocksdb_debug_optimizer_no_zero_cardinality	ON
 rocksdb_default_cf_options	
 rocksdb_delete_obsolete_files_period_micros	21600000000
@@ -885,7 +890,7 @@ rocksdb_error_if_exists	OFF
 rocksdb_force_flush_memtable_now	OFF
 rocksdb_hash_index_allow_collision	ON
 rocksdb_index_type	kBinarySearch
-rocksdb_info_log_level	debug_level
+rocksdb_info_log_level	error_level
 rocksdb_is_fd_close_on_exec	ON
 rocksdb_keep_log_file_num	1000
 rocksdb_lock_wait_timeout	1
@@ -899,19 +904,21 @@ rocksdb_max_open_files	5000
 rocksdb_max_row_locks	1073741824
 rocksdb_max_total_wal_size	0
 rocksdb_no_block_cache	OFF
+rocksdb_override_cf_options	
 rocksdb_paranoid_checks	ON
+rocksdb_pause_background_work	ON
 rocksdb_perf_context_level	1
 rocksdb_rate_limiter_bytes_per_sec	0
 rocksdb_records_in_range	0
 rocksdb_seconds_between_stat_computes	3600
 rocksdb_signal_drop_index_thread	OFF
 rocksdb_skip_fill_cache	OFF
-rocksdb_skip_log_error_on_recovery	OFF
-rocksdb_snapshot_dir	
 rocksdb_stats_dump_period_sec	600
 rocksdb_store_checksums	OFF
 rocksdb_strict_collation_check	OFF
+rocksdb_strict_collation_exceptions	
 rocksdb_table_cache_numshardbits	4
+rocksdb_unsafe_for_binlog	OFF
 rocksdb_use_adaptive_mutex	OFF
 rocksdb_use_fsync	OFF
 rocksdb_validate_tables	1
@@ -979,7 +986,7 @@ insert into t1 values (-5,-5,-5);
 explain
 select key1 from t1 where key1=2;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	ref	key1	key1	5	const	1	Using index
+1	SIMPLE	t1	index	key1	key1	5	NULL	#	Using where; Using index
 select key1 from t1 where key1=2;
 key1
 2
@@ -993,7 +1000,7 @@ insert into t2 values (1,1,1), (2,2,2);
 explain
 select key1 from t2 where key1=2;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	ref	key1	key1	5	const	1	Using index
+1	SIMPLE	t2	index	key1	key1	5	NULL	#	Using where; Using index
 select key1 from t2 where key1=2;
 key1
 2
@@ -1004,7 +1011,7 @@ insert into t3 values (1,1,1), (2,2,2);
 explain 
 select key1 from t3 where key1=2;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t3	ref	key1	key1	9	const	1	Using index
+1	SIMPLE	t3	index	key1	key1	9	NULL	#	Using where; Using index
 select key1 from t3 where key1=2;
 key1
 2
@@ -1022,7 +1029,7 @@ insert into t1 values(1, 'one',11), (2,'two',22);
 explain 
 select key1 from t1 where key1='one';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	ref	key1	key1	11	const	1	Using where; Using index
+1	SIMPLE	t1	index	key1	key1	11	NULL	#	Using where; Using index
 # The following will produce no rows. This looks like a bug,
 #  but it is actually correct behavior. Binary strings are end-padded
 #  with \0 character (and not space).  Comparison does not ignore
@@ -1032,7 +1039,7 @@ key1
 explain
 select hex(key1) from t1 where key1='one\0\0\0\0\0\0\0';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	ref	key1	key1	11	const	1	Using where; Using index
+1	SIMPLE	t1	index	key1	key1	11	NULL	#	Using where; Using index
 select hex(key1) from t1 where key1='one\0\0\0\0\0\0\0';
 hex(key1)
 6F6E6500000000000000
@@ -1047,7 +1054,7 @@ insert into t2 values(1, 'one',11), (2,'two',22);
 explain 
 select key1 from t2 where key1='one';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	ref	key1	key1	11	const	1	Using where; Using index
+1	SIMPLE	t2	index	key1	key1	11	NULL	#	Using where; Using index
 select key1 from t2 where key1='one';
 key1
 one
@@ -1062,7 +1069,7 @@ insert into t3 values(1, 'one',11), (2,'two',22);
 explain 
 select key1 from t3 where key1='one';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t3	ref	key1	key1	31	const	1	Using where; Using index
+1	SIMPLE	t3	index	key1	key1	31	NULL	#	Using where; Using index
 select key1 from t3 where key1='one';
 key1
 one
@@ -1077,7 +1084,7 @@ insert into t4 values(1, 'one'), (2,'two'),(3,'threee'),(55,'fifty-five');
 explain 
 select key1 from t4 where key1='two';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t4	ref	key1	key1	13	const	1	Using where; Using index
+1	SIMPLE	t4	index	key1	key1	13	NULL	#	Using where; Using index
 select key1 from t4 where key1='two';
 key1
 two
@@ -1087,7 +1094,7 @@ fifty-five
 explain 
 select key1 from t4 where key1 between 's' and 'u';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t4	range	key1	key1	13	NULL	1	Using where; Using index
+1	SIMPLE	t4	index	key1	key1	13	NULL	#	Using where; Using index
 select key1 from t4 where key1 between 's' and 'u';
 key1
 threee
@@ -1309,6 +1316,9 @@ drop table t2;
 create table t1 (i int primary key auto_increment) engine=RocksDB;
 insert into t1 values (null);
 insert into t1 values (null);
+SET GLOBAL ROCKSDB_PAUSE_BACKGROUND_WORK = @ORIG_PAUSE_BACKGROUND_WORK;
+SET @ORIG_PAUSE_BACKGROUND_WORK = @@ROCKSDB_PAUSE_BACKGROUND_WORK;
+SET GLOBAL ROCKSDB_PAUSE_BACKGROUND_WORK = 1;
 insert into t1 values (null);
 select * from t1;
 i
@@ -1321,29 +1331,9 @@ drop table t1;
 # 
 create table t1 (i int primary key auto_increment) engine=RocksDB;
 insert into t1 values (null),(null);
-show table status like 't1';;
-Name	t1
-Engine	ROCKSDB
-Version	10
-Row_format	Fixed
-Rows	1000
-Avg_row_length	0
-Data_length	0
-Max_data_length	0
-Index_length	0
-Data_free	0
-Auto_increment	3
-Create_time	NULL
-Update_time	NULL
-Check_time	NULL
-Collation	latin1_swedish_ci
-Checksum	NULL
-Create_options	
-Comment	
-Compression	NULL
-Compression_level	0
-Key_block_size	0
-Compact_metadata	0
+show table status like 't1';
+Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment	Compression	Compression_level	Key_block_size	Compact_metadata
+t1	ROCKSDB	10	Fixed	1000	0	#	0	0	0	3	NULL	NULL	NULL	latin1_swedish_ci	NULL			NULL	0	0	0
 drop table t1;
 #
 # Fix Issue #4: Crash when using pseudo-unique keys
@@ -1393,6 +1383,14 @@ drop table t0, t1;
 #
 show status like 'rocksdb%';
 Variable_name	Value
+rocksdb_rows_deleted	#
+rocksdb_rows_inserted	#
+rocksdb_rows_read	#
+rocksdb_rows_updated	#
+rocksdb_system_rows_deleted	#
+rocksdb_system_rows_inserted	#
+rocksdb_system_rows_read	#
+rocksdb_system_rows_updated	#
 rocksdb_block_cache_add	#
 rocksdb_block_cache_data_hit	#
 rocksdb_block_cache_data_miss	#
@@ -1454,6 +1452,14 @@ rocksdb_write_timedout	#
 rocksdb_write_wal	#
 select VARIABLE_NAME from INFORMATION_SCHEMA.global_status where VARIABLE_NAME LIKE 'rocksdb%';
 VARIABLE_NAME
+ROCKSDB_ROWS_DELETED
+ROCKSDB_ROWS_INSERTED
+ROCKSDB_ROWS_READ
+ROCKSDB_ROWS_UPDATED
+ROCKSDB_SYSTEM_ROWS_DELETED
+ROCKSDB_SYSTEM_ROWS_INSERTED
+ROCKSDB_SYSTEM_ROWS_READ
+ROCKSDB_SYSTEM_ROWS_UPDATED
 ROCKSDB_BLOCK_CACHE_ADD
 ROCKSDB_BLOCK_CACHE_DATA_HIT
 ROCKSDB_BLOCK_CACHE_DATA_MISS
@@ -1517,6 +1523,14 @@ ROCKSDB_WRITE_WAL
 #  but they are shown as both session and global, like InnoDB's status vars.
 select VARIABLE_NAME from INFORMATION_SCHEMA.session_status where VARIABLE_NAME LIKE 'rocksdb%';
 VARIABLE_NAME
+ROCKSDB_ROWS_DELETED
+ROCKSDB_ROWS_INSERTED
+ROCKSDB_ROWS_READ
+ROCKSDB_ROWS_UPDATED
+ROCKSDB_SYSTEM_ROWS_DELETED
+ROCKSDB_SYSTEM_ROWS_INSERTED
+ROCKSDB_SYSTEM_ROWS_READ
+ROCKSDB_SYSTEM_ROWS_UPDATED
 ROCKSDB_BLOCK_CACHE_ADD
 ROCKSDB_BLOCK_CACHE_DATA_HIT
 ROCKSDB_BLOCK_CACHE_DATA_MISS
@@ -1626,14 +1640,14 @@ insert into t1 values (1,1,1), (2,2,2), (3,3,3), (4,4,4), (5,5,5);
 explain
 select * from t1 where col1=2;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	ref	col1	col1	5	const	1	NULL
+1	SIMPLE	t1	ref	col1	col1	5	const	#	NULL
 select * from t1 where col1=2;
 pk	col1	col2
 2	2	2
 explain
 select * from t1 where col2=3;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	ref	col2	col2	5	const	1	NULL
+1	SIMPLE	t1	ref	col2	col2	5	const	#	NULL
 select * from t1 where col2=3;
 pk	col1	col2
 3	3	3
@@ -1656,7 +1670,7 @@ insert into t1 values (1,1,1), (2,2,2), (3,3,3), (4,4,4), (5,5,5);
 explain
 select * from t1 where col1=2;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	ref	col1	col1	5	const	1	NULL
+1	SIMPLE	t1	ref	col1	col1	5	const	#	NULL
 select * from t1 where col1=2;
 pk	col1	col2
 2	2	2
@@ -1735,7 +1749,7 @@ insert into t1 select A.a, B.a, 31, 1234 from t0 A, t0 B;
 explain 
 select * from t1 where id1=30 and value1=30 for update;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	ref	PRIMARY	PRIMARY	4	const	1	Using where
+1	SIMPLE	t1	ref	PRIMARY	PRIMARY	4	const	#	Using where
 set @var1=(select variable_value 
 from information_schema.global_status 
 where variable_name='rocksdb_number_keys_read');
@@ -1757,7 +1771,7 @@ insert into t1 values (1,1),(2,2),(3,3);
 # The following must not use 'Using filesort':
 explain select * from t1 ORDER BY id;
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	index	NULL	PRIMARY	4	NULL	1000	NULL
+1	SIMPLE	t1	index	NULL	PRIMARY	4	NULL	#	NULL
 drop table t1;
 #
 # Issue #26: Index-only scans for DATETIME and TIMESTAMP
@@ -1791,7 +1805,7 @@ explain
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	kp1	kp1	6	NULL	1	Using where; Using index
+1	SIMPLE	t1	index	kp1	kp1	11	NULL	#	Using where; Using index
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 kp1	kp2
@@ -1814,7 +1828,7 @@ explain
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	range	kp1	kp1	5	NULL	1	Using where; Using index
+1	SIMPLE	t2	index	kp1	kp1	10	NULL	#	Using where; Using index
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 kp1	kp2
@@ -1851,7 +1865,7 @@ explain
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2015-01-01' and '2015-01-05';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	kp1	kp1	4	NULL	1	Using where; Using index
+1	SIMPLE	t1	index	kp1	kp1	9	NULL	#	Using where; Using index
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2015-01-01' and '2015-01-05';
 kp1	kp2
@@ -1874,7 +1888,7 @@ explain
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	range	kp1	kp1	3	NULL	1	Using where; Using index
+1	SIMPLE	t2	index	kp1	kp1	8	NULL	#	Using where; Using index
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 kp1	kp2
@@ -1913,7 +1927,7 @@ explain
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	kp1	kp1	5	NULL	1	Using where; Using index
+1	SIMPLE	t1	index	kp1	kp1	10	NULL	#	Using where; Using index
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 kp1	kp2
@@ -1936,7 +1950,7 @@ explain
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	range	kp1	kp1	4	NULL	1	Using where; Using index
+1	SIMPLE	t2	index	kp1	kp1	9	NULL	#	Using where; Using index
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2015-01-01 00:00:00' and '2015-01-05 23:59:59';
 kp1	kp2
@@ -1975,7 +1989,7 @@ explain
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '09:01:00' and '09:05:00';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	kp1	kp1	4	NULL	1	Using where; Using index
+1	SIMPLE	t1	index	kp1	kp1	9	NULL	#	Using where; Using index
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '09:01:00' and '09:05:00';
 kp1	kp2
@@ -1998,7 +2012,7 @@ explain
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '09:01:00' and '09:05:00';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	range	kp1	kp1	3	NULL	1	Using where; Using index
+1	SIMPLE	t2	index	kp1	kp1	8	NULL	#	Using where; Using index
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '09:01:00' and '09:05:00';
 kp1	kp2
@@ -2036,7 +2050,7 @@ explain
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2016' and '2020';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	kp1	kp1	2	NULL	1	Using where; Using index
+1	SIMPLE	t1	index	kp1	kp1	7	NULL	#	Using where; Using index
 select kp1,kp2 from t1 force index (kp1) 
 where kp1 between '2016' and '2020';
 kp1	kp2
@@ -2059,7 +2073,7 @@ explain
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2016' and '2020';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t2	range	kp1	kp1	1	NULL	1	Using where; Using index
+1	SIMPLE	t2	index	kp1	kp1	6	NULL	#	Using where; Using index
 select kp1,kp2 from t2 force index (kp1) 
 where kp1 between '2016' and '2020';
 kp1	kp2
@@ -2108,10 +2122,10 @@ a	b	c
 3	3abcde	3abcde
 explain select * from t1 where b like '1%';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	b	b	1258	NULL	1	Using where
+1	SIMPLE	t1	range	b	b	1258	NULL	#	Using where
 explain select b, a from t1 where b like '1%';
 id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
-1	SIMPLE	t1	range	b	b	1258	NULL	1	Using where
+1	SIMPLE	t1	range	b	b	1258	NULL	#	Using where
 update t1 set b= '12345' where b = '2abcde';
 select * from t1;
 a	b	c
@@ -2158,3 +2172,15 @@ insert into t2
 select concat('v-', 100 + A.a*100 + B.a), 12345 from t1 A, t1 B;
 update t2 set a=concat('x-', a) where a between 'v-1002' and 'v-1004';
 drop table t1,t2;
+#
+# Issue #131: Assertion `v->cfd_->internal_comparator().Compare(start, end) <= 0' failed
+#
+CREATE TABLE t2(c1 INTEGER UNSIGNED NOT NULL, c2 INTEGER NULL, c3 TINYINT, c4 SMALLINT , c5 MEDIUMINT, c6 INT, c7 BIGINT, PRIMARY KEY(c1,c6)) ENGINE=RocksDB;
+INSERT INTO t2 VALUES (1,1,1,1,1,1,1);
+SELECT * FROM t2 WHERE c1 > 4294967295 ORDER BY c1,c6;
+c1	c2	c3	c4	c5	c6	c7
+EXPLAIN SELECT * FROM t2 WHERE c1 > 4294967295 ORDER BY c1,c6;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Impossible WHERE noticed after reading const tables
+drop table t2;
+SET GLOBAL ROCKSDB_PAUSE_BACKGROUND_WORK = @ORIG_PAUSE_BACKGROUND_WORK;

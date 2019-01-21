@@ -116,6 +116,7 @@ RDBSE_KEYDEF::RDBSE_KEYDEF(
     m_key_parts(0),
     maxlength(0) // means 'not intialized'
 {
+  mysql_mutex_init(0, &mutex, MY_MUTEX_INIT_FAST);
   store_index_number(index_number_storage_form, index_number);
   DBUG_ASSERT(cf_handle != nullptr);
 }
@@ -133,6 +134,7 @@ RDBSE_KEYDEF::RDBSE_KEYDEF(const RDBSE_KEYDEF& k) :
     m_key_parts(k.m_key_parts),
     maxlength(k.maxlength)
 {
+  mysql_mutex_init(0, &mutex, MY_MUTEX_INIT_FAST);
   store_index_number(index_number_storage_form, index_number);
   if (k.pack_info)
   {
@@ -151,6 +153,8 @@ RDBSE_KEYDEF::RDBSE_KEYDEF(const RDBSE_KEYDEF& k) :
 
 RDBSE_KEYDEF::~RDBSE_KEYDEF()
 {
+  mysql_mutex_destroy(&mutex);
+
   if (pk_part_no)
     my_free(pk_part_no);
   if (pack_info)
@@ -160,15 +164,19 @@ RDBSE_KEYDEF::~RDBSE_KEYDEF()
 void RDBSE_KEYDEF::setup(TABLE *tbl)
 {
   /*
-    set max_length based on the table. If we're unlucky, setup() may be
-    called concurrently from multiple threads but that is ok because result of
-    compuation is assignment of maxlength to the same value.
-    ^^ TODO: is this still true? concurrent setup() calls are not safe
-    anymore...
+    Set max_length based on the table.  This can be called concurrently from
+    multiple threads, so there is a mutex to protect this code.
   */
   const bool secondary_key= (keyno != tbl->s->primary_key);
   if (!maxlength)
   {
+    mysql_mutex_lock(&mutex);
+    if (maxlength != 0)
+    {
+      mysql_mutex_unlock(&mutex);
+      return;
+    }
+
     KEY *key_info= &tbl->key_info[keyno];
     KEY *pk_info=  &tbl->key_info[tbl->s->primary_key];
 
@@ -284,6 +292,8 @@ void RDBSE_KEYDEF::setup(TABLE *tbl)
     m_key_parts= dst_i;
     maxlength= max_len;
     unpack_data_len= unpack_len;
+
+    mysql_mutex_unlock(&mutex);
   }
 }
 
@@ -436,12 +446,16 @@ bool RDBSE_KEYDEF::unpack_info_has_checksum(const rocksdb::Slice &unpack_info)
           unpack_info.data()[0]== CHECKSUM_DATA_TAG);
 }
 
-
-void RDBSE_KEYDEF::successor(uchar *packed_tuple, uint len)
+/*
+  @return Number of bytes that were changed
+*/
+int RDBSE_KEYDEF::successor(uchar *packed_tuple, uint len)
 {
+  int changed= 0;
   uchar *p= packed_tuple + len - 1;
   for (; p > packed_tuple; p--)
   {
+    changed++;
     if (*p != uchar(0xFF))
     {
       *p= *p + 1;
@@ -449,6 +463,7 @@ void RDBSE_KEYDEF::successor(uchar *packed_tuple, uint len)
     }
     *p='\0';
   }
+  return changed;
 }
 
 
@@ -727,7 +742,13 @@ int RDBSE_KEYDEF::unpack_record(const ha_rocksdb *handler, TABLE *table,
           return 1;
         if (*nullp == 0)
         {
+          /* Set the NULL-bit of this field */
           field->set_null(ptr_diff);
+          /* Also set the field to its default value */
+          uint field_offset= field->ptr - table->record[0];
+          memcpy(buf + field_offset,
+                 table->s->default_values + field_offset,
+                 field->pack_length());
           continue;
         }
         else if (*nullp == 1)
@@ -869,6 +890,127 @@ int unpack_integer(Field_pack_info *fpi, Field *field,
   return 0;
 }
 
+#if !defined(WORDS_BIGENDIAN)
+static
+void swap_double_bytes(uchar *dst, const uchar *src)
+{
+#if defined(__FLOAT_WORD_ORDER) && (__FLOAT_WORD_ORDER == __BIG_ENDIAN)
+  // A few systems store the most-significant _word_ first on little-endian
+  dst[0] = src[3]; dst[1] = src[2]; dst[2] = src[1]; dst[3] = src[0];
+  dst[4] = src[7]; dst[5] = src[6]; dst[6] = src[5]; dst[7] = src[4];
+#else
+  dst[0] = src[7]; dst[1] = src[6]; dst[2] = src[5]; dst[3] = src[4];
+  dst[4] = src[3]; dst[5] = src[2]; dst[6] = src[1]; dst[7] = src[0];
+#endif
+}
+
+static
+void swap_float_bytes(uchar *dst, const uchar *src)
+{
+  dst[0] = src[3]; dst[1] = src[2]; dst[2] = src[1]; dst[3] = src[0];
+}
+#else
+#define swap_double_bytes nullptr
+#define swap_float_bytes  nullptr
+#endif
+
+static
+int unpack_floating_point(uchar *dst, Stream_reader *reader, size_t size,
+                         int exp_digit, const uchar *zero_pattern,
+                         const uchar *zero_val,
+                         void (*swap)(uchar *, const uchar *))
+{
+  const uchar* from;
+
+  from= (const uchar*) reader->read(size);
+  if (from == nullptr)
+    return 1; /* Mem-comparable image doesn't have enough bytes */
+
+  /* Check to see if the value is zero */
+  if (memcmp(from, zero_pattern, size) == 0)
+  {
+    memcpy(dst, zero_val, size);
+    return 0;
+  }
+
+#if defined(WORDS_BIGENDIAN)
+  // On big-endian, output can go directly into result
+  uchar *tmp = dst;
+#else
+  // Otherwise use a temporary buffer to make byte-swapping easier later
+  uchar tmp[8];
+#endif
+
+  memcpy(tmp, from, size);
+
+  if (tmp[0] & 0x80)
+  {
+    // If the high bit is set the original value was positive so
+    // remove the high bit and subtract one from the exponent.
+    ushort exp_part= ((ushort) tmp[0] << 8) | (ushort) tmp[1];
+    exp_part &= 0x7FFF;  // clear high bit;
+    exp_part -= (ushort) 1 << (16 - 1 - exp_digit);  // subtract from exponent
+    tmp[0] = (uchar) (exp_part >> 8);
+    tmp[1] = (uchar) exp_part;
+  }
+  else
+  {
+    // Otherwise the original value was negative and all bytes have been
+    // negated.
+    for (size_t ii = 0; ii < size; ii++)
+      tmp[ii] ^= 0xFF;
+  }
+
+#if !defined(WORDS_BIGENDIAN)
+  // On little-endian, swap the bytes around
+  swap(dst, tmp);
+#endif
+
+  return 0;
+}
+
+#if !defined(DBL_EXP_DIG)
+#define DBL_EXP_DIG (sizeof(double) * 8 - DBL_MANT_DIG)
+#endif
+
+
+/*
+  Unpack a double by doing the reverse action of change_double_for_sort
+  (sql/filesort.cc).  Note that this only works on IEEE values.
+  Note also that this code assumes that NaN and +/-Infinity are never
+  allowed in the database.
+*/
+static
+int unpack_double(Field_pack_info *fpi, Field *field,
+                  Stream_reader *reader, const uchar *unpack_info)
+{
+  static double      zero_val = 0.0;
+  static const uchar zero_pattern[8] = { 128, 0, 0, 0, 0, 0, 0, 0 };
+
+  return unpack_floating_point(field->ptr, reader, sizeof(double), DBL_EXP_DIG,
+      zero_pattern, (const uchar *) &zero_val, swap_double_bytes);
+}
+
+#if !defined(FLT_EXP_DIG)
+#define FLT_EXP_DIG (sizeof(float) * 8 - FLT_MANT_DIG)
+#endif
+
+/*
+  Unpack a float by doing the reverse action of Field_float::make_sort_key
+  (sql/field.cc).  Note that this only works on IEEE values.
+  Note also that this code assumes that NaN and +/-Infinity are never
+  allowed in the database.
+*/
+static
+int unpack_float(Field_pack_info *fpi, Field *field,
+                 Stream_reader *reader, const uchar *unpack_info)
+{
+  static float       zero_val = 0.0;
+  static const uchar zero_pattern[4] = { 128, 0, 0, 0 };
+
+  return unpack_floating_point(field->ptr, reader, sizeof(float), FLT_EXP_DIG,
+      zero_pattern, (const uchar *) &zero_val, swap_float_bytes);
+}
 
 /*
   Unpack by doing the reverse action to Field_newdate::make_sort_key.
@@ -1195,6 +1337,14 @@ bool Field_pack_info::setup(Field *field, uint keynr_arg, uint key_part_arg)
     case MYSQL_TYPE_SHORT:
     case MYSQL_TYPE_TINY:
       unpack_func= unpack_integer;
+      return true;
+
+    case MYSQL_TYPE_DOUBLE:
+      unpack_func= unpack_double;
+      return true;
+
+    case MYSQL_TYPE_FLOAT:
+      unpack_func= unpack_float;
       return true;
 
     case MYSQL_TYPE_DATETIME2:
@@ -1840,16 +1990,59 @@ RDBSE_KEYDEF* Table_ddl_manager::find(GL_INDEX_ID gl_index_id)
 }
 
 void Table_ddl_manager::set_stats(
-  const std::vector<MyRocksTablePropertiesCollector::IndexStats>& stats
+  const std::unordered_map<GL_INDEX_ID,
+  MyRocksTablePropertiesCollector::IndexStats>& stats
 ) {
   mysql_rwlock_wrlock(&rwlock);
-  for (const auto& src : stats) {
-    auto keydef = find(src.gl_index_id);
+  for (auto src : stats) {
+    auto keydef = find(src.second.gl_index_id);
     if (keydef) {
-      keydef->stats = src;
+      keydef->stats = src.second;
     }
   }
   mysql_rwlock_unlock(&rwlock);
+}
+
+void Table_ddl_manager::adjust_stats(
+  const std::vector<MyRocksTablePropertiesCollector::IndexStats>& new_data,
+  const std::vector<MyRocksTablePropertiesCollector::IndexStats>& deleted_data
+) {
+  mysql_rwlock_wrlock(&rwlock);
+  int i = 0;
+  for (const auto& data : {new_data, deleted_data}) {
+    for (const auto& src : data) {
+      auto keydef = find(src.gl_index_id);
+      if (keydef) {
+        keydef->stats.merge(src, i == 0);
+        stats2store[keydef->stats.gl_index_id] = keydef->stats;
+      }
+    }
+    i++;
+  }
+  bool should_save_stats = !stats2store.empty();
+  mysql_rwlock_unlock(&rwlock);
+  if (should_save_stats)
+    request_save_stats();
+}
+
+void Table_ddl_manager::persist_stats()
+{
+  mysql_rwlock_wrlock(&rwlock);
+  auto local_stats2store = std::move(stats2store);
+  stats2store.clear();
+  mysql_rwlock_unlock(&rwlock);
+
+  // Persist stats
+  std::unique_ptr<rocksdb::WriteBatch> wb = dict->begin();
+  std::vector<MyRocksTablePropertiesCollector::IndexStats> stats;
+  std::transform(
+    local_stats2store.begin(), local_stats2store.end(),
+    std::back_inserter(stats),
+    [](
+    const std::pair<GL_INDEX_ID, MyRocksTablePropertiesCollector::IndexStats>& s
+    ) {return s.second;});
+  dict->add_stats(wb.get(), stats);
+  dict->commit(wb.get(), false);
 }
 
 /*
@@ -1993,21 +2186,6 @@ void Table_ddl_manager::cleanup()
   my_hash_free(&ddl_hash);
   mysql_rwlock_destroy(&rwlock);
   sequence.cleanup();
-}
-
-void Table_ddl_manager::add_changed_indexes(
-  const std::vector<GL_INDEX_ID>& v)
-{
-  std::lock_guard<std::mutex> lock(changed_indexes_mutex);
-  changed_indexes.insert(v.begin(), v.end());
-}
-
-std::unordered_set<GL_INDEX_ID> Table_ddl_manager::get_changed_indexes()
-{
-  std::lock_guard<std::mutex> lock(changed_indexes_mutex);
-  auto ret = std::move(changed_indexes);
-  changed_indexes.clear();
-  return ret;
 }
 
 int Table_ddl_manager::scan(void* cb_arg,
@@ -2194,6 +2372,72 @@ bool Binlog_info_manager::unpack_value(const uchar *value, char *binlog_name,
     }
   }
   return false;
+}
+
+/**
+  Inserts a row into mysql.slave_gtid_info table. Doing this inside
+  storage engine is more efficient than inserting/updating through MySQL.
+
+  @param[IN] id Primary key of the table.
+  @param[IN] db Database name. This is column 2 of the table.
+  @param[IN] gtid Gtid in human readable form. This is column 3 of the table.
+*/
+void Binlog_info_manager::update_slave_gtid_info(uint id, const char* db,
+                                                 const char* gtid,
+                                                 rocksdb::WriteBatchBase*
+                                                   write_batch)
+{
+  if (id && db && gtid) {
+    if (!slave_gtid_info.load()) {
+      slave_gtid_info.store(get_ddl_manager()->find(
+                              (const uchar*)("mysql.slave_gtid_info"), 21));
+    }
+    if (!slave_gtid_info.load()) {
+      // slave_gtid_info table is not present. Simply return.
+      return;
+    }
+    assert(slave_gtid_info.load()->n_keys == 1);
+
+    RDBSE_KEYDEF* key_def = slave_gtid_info.load()->key_descr[0];
+    String value;
+
+    // Build key
+    uchar key_buf[RDBSE_KEYDEF::INDEX_NUMBER_SIZE + 4]= {0};
+    uchar* buf= key_buf;
+    store_index_number(buf, key_def->get_index_number());
+    buf += RDBSE_KEYDEF::INDEX_NUMBER_SIZE;
+    store_big_uint4(buf, id);
+    buf += 4;
+    rocksdb::Slice key_slice =
+      rocksdb::Slice((const char*)key_buf, buf-key_buf);
+
+    // Build value
+    uchar value_buf[128]= {0};
+    DBUG_ASSERT(gtid);
+    uint db_len= strlen(db);
+    uint gtid_len= strlen(gtid);
+    buf= value_buf;
+    // 1 byte used for flags. Empty here.
+    buf++;
+
+    // Write column 1.
+    DBUG_ASSERT(strlen(db) <= 64);
+    store_big_uint1(buf, db_len);
+    buf++;
+    memcpy(buf, db, db_len);
+    buf += db_len;
+
+    // Write column 2.
+    DBUG_ASSERT(gtid_len <= 56);
+    store_big_uint1(buf, gtid_len);
+    buf++;
+    memcpy(buf, gtid, gtid_len);
+    buf += gtid_len;
+    rocksdb::Slice value_slice =
+      rocksdb::Slice((const char*)value_buf, buf-value_buf);
+
+    write_batch->Put(key_def->get_cf(), key_slice, value_slice);
+  }
 }
 
 bool Dict_manager::init(rocksdb::DB *rdb_dict, Column_family_manager *cf_manager)
@@ -2519,7 +2763,7 @@ void Dict_manager::add_drop_table(RDBSE_KEYDEF** key_descr,
 }
 
 /*
-  This function is supposed to be called by drop_index_thread, when it 
+  This function is supposed to be called by drop_index_thread, when it
   finished dropping any index.
  */
 void Dict_manager::done_drop_indexes(

@@ -2071,6 +2071,8 @@ public:
   {
     cached_table_flags= table_flags();
   }
+
+  virtual bool init_with_fields() { return false; }
   /* ha_ methods: public wrappers for private virtual API */
 
   int ha_open(TABLE *table, const char *name, int mode, int test_if_locked);
@@ -2138,7 +2140,7 @@ public:
   bool ha_check_and_repair(THD *thd);
   int ha_disable_indexes(uint mode);
   int ha_enable_indexes(uint mode);
-  int ha_discard_or_import_tablespace(my_bool discard);
+  int ha_discard_or_import_tablespace(uint discard);
   int ha_rename_table(const char *from, const char *to);
   int ha_delete_table(const char *name);
   void ha_drop_table(const char *name);
@@ -3345,7 +3347,7 @@ public:
   virtual bool check_and_repair(THD *thd) { return TRUE; }
   virtual int disable_indexes(uint mode) { return HA_ERR_WRONG_COMMAND; }
   virtual int enable_indexes(uint mode) { return HA_ERR_WRONG_COMMAND; }
-  virtual int discard_or_import_tablespace(my_bool discard)
+  virtual int discard_or_import_tablespace(uint discard)
   { return (my_errno=HA_ERR_WRONG_COMMAND); }
   virtual void drop_table(const char *name);
   virtual int defragment_table(const char *name, const char *index,

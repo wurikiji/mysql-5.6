@@ -7,6 +7,7 @@
 # Ignores for files resulting from building in place:
 *-t
 *.a
+*.o
 *.so
 *.so.*
 *.swp
@@ -16,6 +17,7 @@ CPackConfig.cmake
 CPackSourceConfig.cmake
 CTestTestfile.cmake
 Docs/INFO_BIN
+Docs/INFO_SRC
 Makefile
 TAGS
 VERSION.dep
@@ -45,9 +47,13 @@ include/my_config.h
 include/mysql_version.h
 include/mysqld_ername.h
 include/mysqld_error.h
+include/probes_mysql.d
+include/probes_mysql_dtrace.h
 include/sql_state.h
 info_macros.cmake
 libmysql/libmysql.ver
+libmysql/merge_archives_webscalesqlclient.cmake
+libmysql/webscalesqlclient_depends.c
 libmysql*/merge_archives_mysql*.cmake
 libmysql*/mysql*_depends.c
 libmysql*/libmysql*_exports_file.cc

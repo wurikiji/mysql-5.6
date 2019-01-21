@@ -513,6 +513,9 @@ The following options may be given as the first argument:
  If non-zero: relay log will be rotated automatically when
  the size exceeds this value; if zero: when the size
  exceeds max_binlog_size
+ --max-running-queries=# 
+ The maximum number of running queries allowed for a
+ database. If this value is 0, no such limits are applied.
  --max-seeks-for-key=# 
  Limit assumed max number of seeks when looking up rows
  based on a key
@@ -526,6 +529,9 @@ The following options may be given as the first argument:
  --max-user-connections=# 
  The maximum number of active connections for a single
  user (0 = no limit)
+ --max-waiting-queries=# 
+ The maximum number of waiting queries allowed for a
+ database.If this value is 0, no such limits are applied.
  --max-write-lock-count=# 
  After this many write locks, allow some read locks to run
  in between
@@ -977,8 +983,6 @@ The following options may be given as the first argument:
  Enable or disable ROCKSDB_CF_OPTIONS plugin. Possible
  values are ON, OFF, FORCE (don't start if the plugin
  fails to load).
- --rocksdb-cf-options-file=name 
- path to cnf file with cf options for RocksDB
  --rocksdb-cfstats[=name] 
  Enable or disable ROCKSDB_CFSTATS plugin. Possible values
  are ON, OFF, FORCE (don't start if the plugin fails to
@@ -999,11 +1003,15 @@ The following options may be given as the first argument:
  --rocksdb-compaction-sequential-deletes-window=# 
  Size of the window for counting
  rocksdb_compaction_sequential_deletes
+ --rocksdb-create-checkpoint=name 
+ Checkpoint directory
  --rocksdb-create-if-missing 
  DBOptions::create_if_missing for RocksDB
  (Defaults to on; use --skip-rocksdb-create-if-missing to disable.)
  --rocksdb-create-missing-column-families 
  DBOptions::create_missing_column_families for RocksDB
+ --rocksdb-datadir[=name] 
+ RocksDB data directory
  --rocksdb-db-write-buffer-size=# 
  DBOptions::db_write_buffer_size for RocksDB
  --rocksdb-dbstats[=name] 
@@ -1014,8 +1022,8 @@ The following options may be given as the first argument:
  Enable or disable ROCKSDB_DDL plugin. Possible values are
  ON, OFF, FORCE (don't start if the plugin fails to load).
  --rocksdb-debug-optimizer-n-rows=# 
- Used for info(). Testing purpose only and will be
- deprecated
+ Test only to override rocksdb estimates of table size in
+ a memtable
  --rocksdb-debug-optimizer-no-zero-cardinality 
  In case if cardinality is zero, overrides it with some
  value
@@ -1034,6 +1042,10 @@ The following options may be given as the first argument:
  --rocksdb-force-flush-memtable-now 
  Forces memstore flush which may block all write requests
  so be careful
+ --rocksdb-global-info[=name] 
+ Enable or disable ROCKSDB_GLOBAL_INFO plugin. Possible
+ values are ON, OFF, FORCE (don't start if the plugin
+ fails to load).
  --rocksdb-hash-index-allow-collision 
  BlockBasedTableOptions::hash_index_allow_collision for
  RocksDB
@@ -1073,9 +1085,13 @@ The following options may be given as the first argument:
  DBOptions::max_total_wal_size for RocksDB
  --rocksdb-no-block-cache 
  BlockBasedTableOptions::no_block_cache for RocksDB
+ --rocksdb-override-cf-options=name 
+ option overrides per cf for RocksDB
  --rocksdb-paranoid-checks 
  DBOptions::paranoid_checks for RocksDB
  (Defaults to on; use --skip-rocksdb-paranoid-checks to disable.)
+ --rocksdb-pause-background-work 
+ Disable all rocksdb background operations
  --rocksdb-perf-context[=name] 
  Enable or disable ROCKSDB_PERF_CONTEXT plugin. Possible
  values are ON, OFF, FORCE (don't start if the plugin
@@ -1099,10 +1115,6 @@ The following options may be given as the first argument:
  Wake up drop index thread
  --rocksdb-skip-fill-cache 
  Skip filling block cache on read requests
- --rocksdb-skip-log-error-on-recovery 
- DBOptions::skip_log_error_on_recovery for RocksDB
- --rocksdb-snapshot-dir=name 
- Checkpoint directory
  --rocksdb-stats-dump-period-sec=# 
  DBOptions::stats_dump_period_sec for RocksDB
  --rocksdb-store-checksums 
@@ -1110,8 +1122,14 @@ The following options may be given as the first argument:
  --rocksdb-strict-collation-check 
  Enforce case sensitive collation for MyRocks indexes
  (Defaults to on; use --skip-rocksdb-strict-collation-check to disable.)
+ --rocksdb-strict-collation-exceptions=name 
+ List of tables (using regex) that are excluded from the
+ case sensitive collation enforcement
  --rocksdb-table-cache-numshardbits=# 
  DBOptions::table_cache_numshardbits for RocksDB
+ --rocksdb-unsafe-for-binlog 
+ Allowing statement based binary logging which may break
+ consistency
  --rocksdb-use-adaptive-mutex 
  DBOptions::use_adaptive_mutex for RocksDB
  --rocksdb-use-fsync DBOptions::use_fsync for RocksDB
@@ -1207,6 +1225,11 @@ The following options may be given as the first argument:
  that are idempotent. In STRICT mode, replication will
  stop on any unexpected difference between the master and
  the slave
+ --slave-gtid-info=name 
+ Whether SQL threads update mysql.slave_gtid_info table.
+ If this value is OPTIMIZED, updating the table is done
+ inside storage engines to avoid MySQL layer's performance
+ overhead
  --slave-load-tmpdir=name 
  The location where the slave should put its temporary
  files when replicating a LOAD DATA INFILE command
@@ -1547,11 +1570,13 @@ max-join-size 18446744073709551615
 max-length-for-sort-data 1024
 max-prepared-stmt-count 16382
 max-relay-log-size 0
+max-running-queries 0
 max-seeks-for-key 18446744073709551615
 max-sort-length 1024
 max-sp-recursion-depth 0
 max-tmp-tables 32
 max-user-connections 0
+max-waiting-queries 0
 max-write-lock-count 18446744073709551615
 memlock FALSE
 metadata-locks-cache-size 1024
@@ -1679,7 +1704,6 @@ rocksdb-bulk-load-size 1000
 rocksdb-bytes-per-sync 0
 rocksdb-cache-index-and-filter-blocks TRUE
 rocksdb-cf-options ON
-rocksdb-cf-options-file 
 rocksdb-cfstats ON
 rocksdb-checksums-pct 100
 rocksdb-collect-sst-properties TRUE
@@ -1687,12 +1711,14 @@ rocksdb-compact-cf
 rocksdb-compaction-sequential-deletes 1900
 rocksdb-compaction-sequential-deletes-file-size 0
 rocksdb-compaction-sequential-deletes-window 2000
+rocksdb-create-checkpoint 
 rocksdb-create-if-missing TRUE
 rocksdb-create-missing-column-families FALSE
+rocksdb-datadir ./.rocksdb
 rocksdb-db-write-buffer-size 0
 rocksdb-dbstats ON
 rocksdb-ddl ON
-rocksdb-debug-optimizer-n-rows 1000
+rocksdb-debug-optimizer-n-rows 0
 rocksdb-debug-optimizer-no-zero-cardinality TRUE
 rocksdb-default-cf-options 
 rocksdb-delete-obsolete-files-period-micros 21600000000
@@ -1700,10 +1726,11 @@ rocksdb-disableDataSync FALSE
 rocksdb-enable-thread-tracking FALSE
 rocksdb-error-if-exists FALSE
 rocksdb-force-flush-memtable-now FALSE
+rocksdb-global-info ON
 rocksdb-hash-index-allow-collision TRUE
 rocksdb-index-file-map ON
 rocksdb-index-type kBinarySearch
-rocksdb-info-log-level debug_level
+rocksdb-info-log-level error_level
 rocksdb-is-fd-close-on-exec TRUE
 rocksdb-keep-log-file-num 1000
 rocksdb-lock-wait-timeout 1
@@ -1717,7 +1744,9 @@ rocksdb-max-open-files 5000
 rocksdb-max-row-locks 1073741824
 rocksdb-max-total-wal-size 0
 rocksdb-no-block-cache FALSE
+rocksdb-override-cf-options 
 rocksdb-paranoid-checks TRUE
+rocksdb-pause-background-work FALSE
 rocksdb-perf-context ON
 rocksdb-perf-context-global ON
 rocksdb-perf-context-level 1
@@ -1726,12 +1755,12 @@ rocksdb-records-in-range 0
 rocksdb-seconds-between-stat-computes 3600
 rocksdb-signal-drop-index-thread FALSE
 rocksdb-skip-fill-cache FALSE
-rocksdb-skip-log-error-on-recovery FALSE
-rocksdb-snapshot-dir 
 rocksdb-stats-dump-period-sec 600
 rocksdb-store-checksums FALSE
 rocksdb-strict-collation-check TRUE
+rocksdb-strict-collation-exceptions (No default value)
 rocksdb-table-cache-numshardbits 4
+rocksdb-unsafe-for-binlog FALSE
 rocksdb-use-adaptive-mutex FALSE
 rocksdb-use-fsync FALSE
 rocksdb-validate-tables 1
@@ -1768,6 +1797,7 @@ slave-checkpoint-group 512
 slave-checkpoint-period 300
 slave-compressed-protocol FALSE
 slave-exec-mode STRICT
+slave-gtid-info ON
 slave-max-allowed-packet 1073741824
 slave-net-timeout 3600
 slave-parallel-workers 0

@@ -295,6 +295,11 @@ public:
     disk space.
    */
   bool sql_force_rotate_relay;
+  /*
+    A flag to say "consider we have caught up" when calculating seconds behind
+    the master
+  */
+  bool slave_has_caughtup;
 
   time_t last_master_timestamp;
 
@@ -631,7 +636,7 @@ public:
   {
     mysql_rwlock_unlock(&gtid_info_hash_lock);
   }
-  int flush_gtid_infos(bool force);
+  int flush_gtid_infos(bool force, bool xid_event = false);
   /**
      returns true if there is any gap-group of events to execute
                   at slave starting phase.

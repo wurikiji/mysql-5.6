@@ -23,6 +23,7 @@
 #include "./handler.h"                     /* handler */
 #include "./my_global.h"                   /* ulonglong */
 #include "./sql_string.h"
+#include "./ut0counter.h"
 
 /* RocksDB header files */
 #include "rocksdb/cache.h"
@@ -66,9 +67,9 @@ inline bool looks_like_per_index_cf_typo(const char *name)
 extern PSI_stage_info stage_waiting_on_row_lock;
 
 extern "C"
+{
 void thd_enter_cond(MYSQL_THD thd, mysql_cond_t *cond, mysql_mutex_t *mutex,
                     const PSI_stage_info *stage, PSI_stage_info *old_stage);
-extern "C"
 void thd_exit_cond(MYSQL_THD thd, const PSI_stage_info *stage);
 
 /**
@@ -76,9 +77,22 @@ void thd_exit_cond(MYSQL_THD thd, const PSI_stage_info *stage);
   @param  thd   Thread handle
   @param  all   TRUE <=> rollback main transaction.
 */
-extern "C"
 void thd_mark_transaction_to_rollback(MYSQL_THD thd, bool all);
 
+/**
+ *   Get the user thread's binary logging format
+ *   @param thd  user thread
+ *   @return Value to be used as index into the binlog_format_names array
+*/
+int thd_binlog_format(const MYSQL_THD thd);
+
+/**
+ *   Check if binary logging is filtered for thread's current db.
+ *   @param  thd   Thread handle
+ *   @retval 1 the query is not filtered, 0 otherwise.
+*/
+bool thd_binlog_filter_ok(const MYSQL_THD thd);
+}
 
 //#endif
 
@@ -147,6 +161,36 @@ typedef struct _gl_index_id_s {
         (cf_id == other.cf_id && index_id >= other.index_id);
   }
 } GL_INDEX_ID;
+
+enum operation_type {
+  ROWS_DELETED = 0,
+  ROWS_INSERTED,
+  ROWS_READ,
+  ROWS_UPDATED,
+  ROWS_MAX
+};
+
+/* Global statistics struct used inside MyRocks */
+struct st_global_stats {
+  ib_counter_t<ulonglong, 64> rows[ROWS_MAX];
+
+  // system_rows_ stats are only for system
+  // tables. They are not counted in rows_* stats.
+  ib_counter_t<ulonglong, 64> system_rows[ROWS_MAX];
+};
+
+/* Struct used for exporting status to MySQL */
+struct st_export_stats {
+  ulonglong rows_deleted;
+  ulonglong rows_inserted;
+  ulonglong rows_read;
+  ulonglong rows_updated;
+
+  ulonglong system_rows_deleted;
+  ulonglong system_rows_inserted;
+  ulonglong system_rows_read;
+  ulonglong system_rows_updated;
+};
 
 /* Provide hash function for GL_INDEX_ID so we can include it in sets */
 namespace std {
@@ -272,6 +316,9 @@ class ha_rocksdb: public handler
 
   /* TRUE means we're doing an index-only read. FALSE means otherwise. */
   bool keyread_only;
+
+  /* TRUE means we're doing an INSERT...ON DUPLICATE KEY UPDATE */
+  bool insert_with_update;
 
   bool skip_scan_it_next_call;
 
@@ -417,6 +464,8 @@ public:
            HA_NULL_IN_KEY;
   }
 
+  bool init_with_fields() override;
+
   /** @brief
     This is a bitmap of flags that indicates how the storage engine
     implements indexes. The current index flags are documented in
@@ -478,6 +527,13 @@ public:
    */
   uint max_supported_key_length()    const { return 16*1024; /* just to return something*/ }
 
+  /**
+    TODO: return actual upper bound of number of records in the table.
+    (e.g. save number of records seen on full table scan and/or use file size
+    as upper bound)
+  */
+  ha_rows estimate_rows_upper_bound() { return HA_POS_ERROR; }
+
   /* At the moment, we're ok with default handler::index_init() implementation. */
   int index_read_map(uchar * buf, const uchar * key,
                      key_part_map keypart_map,
@@ -485,7 +541,6 @@ public:
   int index_read_map_impl(uchar * buf, const uchar * key,
                           key_part_map keypart_map,
                           enum ha_rkey_function find_flag,
-                          const bool is_eq_cond_range_scan,
                           const key_range *end_key);
 
   int index_read_last_map(uchar * buf, const uchar * key,
@@ -529,11 +584,12 @@ private:
   int find_icp_matching_index_rec(bool move_forward, uchar *buf);
 
   void calc_updated_indexes();
-  int update_write_row(const uchar *old_data, uchar *new_data, bool do_locking);
+  int update_write_row(const uchar *old_data, uchar *new_data, bool bulk_load);
 
   int read_key_exact(RDBSE_KEYDEF *kd, rocksdb::Iterator* scan_it,
                      bool using_full_key, rocksdb::Slice& key_slice);
 public:
+  int index_init(uint idx, bool sorted);
   int index_end();
 
   void unlock_row();
@@ -598,4 +654,5 @@ public:
                           ulonglong *nb_reserved_values);
   void update_create_info(HA_CREATE_INFO *create_info);
   int optimize(THD *thd, HA_CHECK_OPT *check_opt);
+  int analyze(THD* thd, HA_CHECK_OPT* check_opt);
 };

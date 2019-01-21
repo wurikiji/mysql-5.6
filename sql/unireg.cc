@@ -725,8 +725,6 @@ static int64_t pack_keys(uchar *keybuff, uint key_length, uint key_count,
           c[0] = 'T'; break;
         case MYSQL_TYPE_STRING:
           c[0] = 'S'; break;
-        case MYSQL_TYPE_BLOB:
-          c[0] = 'B'; break;
         default:
           DBUG_ASSERT(0);
         }
@@ -835,13 +833,6 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
                                 (char *) field->field_name))
       DBUG_RETURN(true);
     totlength+= field->length;
-
-    /* if this is a document field, we need to restore the actual nullability
-     * from the nullable_document flag. The document field in memory is always
-     * nullable.
-     */
-    if (field->sql_type == MYSQL_TYPE_DOCUMENT && !field->nullable_document)
-      field->pack_flag &= ~FIELDFLAG_MAYBE_NULL;
 
     com_length+= field->comment.length;
     if (MTYP_TYPENR(field->unireg_check) == Field::NOEMPTY ||
@@ -1215,8 +1206,7 @@ static bool make_empty_rec(THD *thd, File file,
                                 field->unireg_check,
                                 field->save_interval ? field->save_interval :
                                 field->interval, 
-                                field->field_name,
-                                field->nullable_document);
+                                field->field_name);
     if (!regfield)
     {
       error= 1;
@@ -1263,10 +1253,6 @@ static bool make_empty_rec(THD *thd, File file,
         delete regfield;
         goto err;
       }
-    }
-    else if (regfield->real_type() == MYSQL_TYPE_DOCUMENT) {
-      /* Do not store implicit '{}' as it will be deleted right after */
-      regfield->set_notnull();
     }
     else if (regfield->real_type() == MYSQL_TYPE_ENUM &&
 	     (field->flags & NOT_NULL_FLAG))

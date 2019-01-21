@@ -9896,11 +9896,9 @@ found:
 		if (key_part->document_path_key_part)
 		{
 			if (key_part->document_path_key_part->type !=
-			    	MYSQL_TYPE_STRING &&
-			    key_part->document_path_key_part->type !=
-				MYSQL_TYPE_BLOB) {
+					MYSQL_TYPE_STRING) {
 				/* prefix_len should be 0 for document path
-				types other than STRING and BLOB. */
+				types other than STRING. */
 				prefix_len = 0;
 			}
 			DBUG_ASSERT(field->type() == MYSQL_TYPE_DOCUMENT);
@@ -11212,7 +11210,8 @@ UNIV_INTERN
 int
 ha_innobase::discard_or_import_tablespace(
 /*======================================*/
-	my_bool discard)	/*!< in: TRUE if discard, else import */
+	uint discard)	/*!< in: enum_tablespace_op_type
+			import, discard, fast discard*/
 {
 	dberr_t		err;
 	dict_table_t*	dict_table;
@@ -11268,7 +11267,9 @@ ha_innobase::discard_or_import_tablespace(
 		}
 
 		err = row_discard_tablespace_for_mysql(
-			dict_table->name, prebuilt->trx);
+			dict_table->name, prebuilt->trx,
+			discard == Sql_cmd_discard_import_tablespace::
+				DISCARD_TABLESPACE_FAST);
 
 	} else if (!dict_table->ibd_file_missing) {
 		/* Commit the transaction in order to
@@ -15192,8 +15193,10 @@ innobase_xa_prepare(
 
 		ut_ad(trx_is_registered_for_2pc(trx));
 
-		trx_prepare_for_mysql(trx, async);
-
+		dberr_t err = trx_prepare_for_mysql(trx, async);
+		if (err != DB_SUCCESS) {
+			return(convert_error_code_to_mysql(err, 0, NULL));
+		}
 		error = 0;
 	} else {
 		/* We just mark the SQL statement ended and do not do a
@@ -18108,7 +18111,7 @@ static MYSQL_SYSVAR_ULONG(buffer_pool_chunk_size, srv_buf_pool_chunk_unit,
   " 0 means not to use chunk allocation and buffer pool resize will be disabled."
   " This is used to avoid memory copying when resizing buffer pool.",
   NULL, NULL,
-  0, 0, LONG_MAX, 1024*1024L);
+  64*1024*1024, 0, LONG_MAX, 1024*1024L);
 
 static MYSQL_SYSVAR_STR(histogram_step_size_async_read,
   innobase_histogram_step_size_async_read,

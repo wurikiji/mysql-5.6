@@ -6,20 +6,20 @@ Note	####	Storing MySQL user name or password information in the master info rep
 drop table if exists t1, t2, t3, t4;
 CREATE TABLE t1 (
 a int not null,
-doc document not null,
+doc document,
 primary key (a),
 key (doc)) engine=innodb;
 ERROR HY000: DOCUMENT column 'doc' cannot be part of a key
 CREATE TABLE t1 (
 a int primary key,
 b blob not null,
-doc document not null,
+doc document,
 key(doc.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a.a as string(100))) engine=innodb;
 ERROR HY000: Specified document path key was too long; max path length is 641 bytes
 CREATE TABLE t1 (
 a int not null,
 b char (10) not null,
-doc document not null,
+doc document,
 primary key (a),
 key (doc.id as int),
 key (doc.name as string)) engine=innodb;
@@ -27,16 +27,24 @@ ERROR 42000: You have an error in your SQL syntax; check the manual that corresp
 CREATE TABLE t1 (
 a int not null,
 b char (10) not null,
-doc document not null,
+doc document,
 primary key (a),
 key (doc.id as int),
 key (doc.address as binary)) engine=innodb;
-ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ')) engine=innodb' at line 7
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'binary)) engine=innodb' at line 7
+CREATE TABLE t1 (
+a int not null,
+b char (10) not null,
+doc document,
+primary key (a),
+key (doc.id as int),
+key (doc.address as binary(100))) engine=innodb;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'binary(100))) engine=innodb' at line 7
 CREATE TABLE t1 (
 a int not null,
 b int,
 c char (10),
-doc document not null,
+doc document,
 primary key (a),
 UNIQUE key b_a (b, a),
 UNIQUE key c_doc (c, doc.address.zipcode as int)
@@ -47,7 +55,7 @@ t1	CREATE TABLE `t1` (
   `a` int(11) NOT NULL,
   `b` int(11) DEFAULT NULL,
   `c` char(10) DEFAULT NULL,
-  `doc` document NOT NULL,
+  `doc` document DEFAULT NULL,
   PRIMARY KEY (`a`),
   UNIQUE KEY `b_a` (`b`,`a`),
   UNIQUE KEY `c_doc` (`c`,`doc`.`address`.`zipcode` AS INT)
@@ -116,29 +124,29 @@ a	b	c	doc
 CREATE TABLE t2 (
 a int not null,
 b char (10) not null,
-doc document not null,
+doc document,
 primary key (a),
 key (doc.id as int),
 UNIQUE key doc_double (doc.double as double),
 UNIQUE key doc_bool (doc.bool as bool),
 UNIQUE key doc_name (doc.name as string(64)),
 key doc_name_100 (doc.name as string(100)),
-UNIQUE key doc_address (doc.address as binary(64)),
-key (doc.address as binary(100))) engine=innodb;
+UNIQUE key doc_address_streetName (doc.address.streetName as string(64)),
+key (doc.address.streetName as string(100))) engine=innodb;
 SHOW CREATE TABLE t2;
 Table	Create Table
 t2	CREATE TABLE `t2` (
   `a` int(11) NOT NULL,
   `b` char(10) NOT NULL,
-  `doc` document NOT NULL,
+  `doc` document DEFAULT NULL,
   PRIMARY KEY (`a`),
   UNIQUE KEY `doc_double` (`doc`.`double` AS DOUBLE),
   UNIQUE KEY `doc_bool` (`doc`.`bool` AS BOOL),
   UNIQUE KEY `doc_name` (`doc`.`name` AS STRING(64)),
-  UNIQUE KEY `doc_address` (`doc`.`address` AS BINARY(64)),
+  UNIQUE KEY `doc_address_streetName` (`doc`.`address`.`streetName` AS STRING(64)),
   KEY `doc` (`doc`.`id` AS INT),
   KEY `doc_name_100` (`doc`.`name` AS STRING(100)),
-  KEY `doc_2` (`doc`.`address` AS BINARY(100))
+  KEY `doc_2` (`doc`.`address`.`streetName` AS STRING(100))
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
 SHOW INDEXES IN t2;
 Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment
@@ -146,7 +154,7 @@ t2	0	PRIMARY	1	a	A	-	NULL	NULL		BTREE
 t2	0	doc_double	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	0	doc_bool	1	doc	A	-	1	NULL	YES	BTREE	disabled	
 t2	0	doc_name	1	doc	A	-	64	NULL	YES	BTREE	disabled	
-t2	0	doc_address	1	doc	A	-	64	NULL	YES	BTREE	disabled	
+t2	0	doc_address_streetName	1	doc	A	-	64	NULL	YES	BTREE	disabled	
 t2	1	doc	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	1	doc_name_100	1	doc	A	-	100	NULL	YES	BTREE	disabled	
 t2	1	doc_2	1	doc	A	-	100	NULL	YES	BTREE	disabled	
@@ -166,11 +174,11 @@ ERROR 23000: Duplicate entry '1.2345678901234567123' for key 'doc_double'
 delete from t2 where a = 6 or a = 7;
 insert into t2 values (6,'@6','{ "name":"Eddard" }');
 ERROR 23000: Duplicate entry 'Eddard' for key 'doc_name'
-insert into t2 values (6,'@6','{ "address":{ "houseNumber":1005, "streetName":"5th", "zipcode":98765 } }');
-ERROR 23000: Duplicate entry '{"houseNumber":1005,"streetName":"5th","zipcode":98765}' for key 'doc_address'
+insert into t2 values (6,'@6','{ "address":{ "houseNumber":1005, "streetName":"4th", "zipcode":98765 } }');
+ERROR 23000: Duplicate entry '4th' for key 'doc_address_streetName'
 update t2 set doc='{ "id":105, "name":"Ned", "phone":6507770005, "address":{ "houseNumber":1005, "streetName":"Winterfell", "zipcode":98766 }, "Children":["Rob", "Sansa", "Arya"], "a.b.c.":5 }' where a = 5;
 insert into t2 values (6,'@6','{ "address":{ "houseNumber":1005, "streetName":"Winterfell", "zipcode":98766 } }');
-ERROR 23000: Duplicate entry '{"houseNumber":1005,"streetName":"Winterfell","zipcode":98766}' for key 'doc_address'
+ERROR 23000: Duplicate entry 'Winterfell' for key 'doc_address_streetName'
 insert into t2 values(7,'@7','{ "double" : 123}');
 insert into t2 values(8, '@8','{ "double" : 123.0}');
 ERROR 23000: Duplicate entry '123' for key 'doc_double'
@@ -208,7 +216,7 @@ t2	0	PRIMARY	1	a	A	-	NULL	NULL		BTREE
 t2	0	doc_double	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	0	doc_bool	1	doc	A	-	1	NULL	YES	BTREE	disabled	
 t2	0	doc_name	1	doc	A	-	64	NULL	YES	BTREE	disabled	
-t2	0	doc_address	1	doc	A	-	64	NULL	YES	BTREE	disabled	
+t2	0	doc_address_streetName	1	doc	A	-	64	NULL	YES	BTREE	disabled	
 t2	1	doc	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	1	doc_name_100	1	doc	A	-	100	NULL	YES	BTREE	disabled	
 t2	1	doc_2	1	doc	A	-	100	NULL	YES	BTREE	disabled	
@@ -218,7 +226,7 @@ Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_par
 t2	0	PRIMARY	1	a	A	-	NULL	NULL		BTREE		
 t2	0	doc_double	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	0	doc_name	1	doc	A	-	64	NULL	YES	BTREE	disabled	
-t2	0	doc_address	1	doc	A	-	64	NULL	YES	BTREE	disabled	
+t2	0	doc_address_streetName	1	doc	A	-	64	NULL	YES	BTREE	disabled	
 t2	1	doc	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	1	doc_name_100	1	doc	A	-	100	NULL	YES	BTREE	disabled	
 t2	1	doc_2	1	doc	A	-	100	NULL	YES	BTREE	disabled	
@@ -228,10 +236,10 @@ Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_par
 t2	0	PRIMARY	1	a	A	-	NULL	NULL		BTREE		
 t2	0	doc_double	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	0	doc_name	1	doc	A	-	64	NULL	YES	BTREE	disabled	
-t2	0	doc_address	1	doc	A	-	64	NULL	YES	BTREE	disabled	
+t2	0	doc_address_streetName	1	doc	A	-	64	NULL	YES	BTREE	disabled	
 t2	1	doc	1	doc	A	-	8	NULL	YES	BTREE	disabled	
 t2	1	doc_2	1	doc	A	-	100	NULL	YES	BTREE	disabled	
-ALTER TABLE t2 DROP KEY doc_address;
+ALTER TABLE t2 DROP KEY doc_address_streetName;
 SHOW INDEXES IN t2;
 Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment
 t2	0	PRIMARY	1	a	A	-	NULL	NULL		BTREE		
@@ -243,7 +251,7 @@ CREATE TABLE t3 (
 a int not null,
 b int,
 c char (10),
-doc document not null,
+doc document,
 primary key (a),
 UNIQUE key b_a (b, a)
 ) engine=innodb;
@@ -253,7 +261,7 @@ t3	CREATE TABLE `t3` (
   `a` int(11) NOT NULL,
   `b` int(11) DEFAULT NULL,
   `c` char(10) DEFAULT NULL,
-  `doc` document NOT NULL,
+  `doc` document DEFAULT NULL,
   PRIMARY KEY (`a`),
   UNIQUE KEY `b_a` (`b`,`a`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
@@ -307,10 +315,10 @@ a	b	c	doc
 CREATE TABLE t4 (
 a int not null,
 b char (10) not null,
-doc document not null,
+doc document,
 primary key (a),
 key id_a_double_b_bool (doc.id as int, a, doc.double as double, b, doc.bool as bool),
-key a_name_b_name100_address_a_address100_b (a, doc.name as string(64), b, doc.name as string(100), doc.address as binary(64), a, doc.address as binary(100), b)) engine=innodb;
+key a_name_b_name100_address_a_address100_b (a, doc.name as string(64), b, doc.name as string(100), doc.address as string(64), a, doc.address as string(100), b)) engine=innodb;
 ERROR 42S21: Duplicate column name 'doc'
 drop table t1, t2, t3;
 select document_path, document_type from information_schema.innodb_sys_docstore_fields;

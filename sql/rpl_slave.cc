@@ -3145,11 +3145,11 @@ bool show_slave_status(THD* thd, Master_info* mi)
         (i.e. they are in the same second), then we get 0-(2-1)=-1 as a result.
         This confuses users, so we don't go below 0: hence the max().
 
-        last_master_timestamp == 0 (an "impossible" timestamp 1970) is a
-        special marker to say "consider we have caught up".
+        rli->slave_has_caughup is a special flag to say
+        "consider we have caught up" to update the seconds behind master.
       */
-        protocol->store((longlong)(mi->rli->last_master_timestamp ?
-                                   max(0L, time_diff) : 0));
+        protocol->store((longlong)(mi->rli->slave_has_caughtup ?
+                                   0 : max(0L, time_diff)));
       }
       protocol->store((longlong) (max(0L, mi->rli->peak_lag(now))));
     }
@@ -4328,7 +4328,25 @@ static int exec_relay_log_event(THD* thd, Relay_log_info* rli)
     {
       DBUG_ASSERT(ev->get_type_code() != ROTATE_EVENT && ev->get_type_code() !=
                   PREVIOUS_GTIDS_LOG_EVENT);
-      rli->last_master_timestamp= ev->when.tv_sec + (time_t) ev->exec_time;
+
+      // Set the flag to say that "the slave has not yet caught up"
+      rli->slave_has_caughtup= false;
+      /*
+        To avoid spiky second behind master, we here keeps last_master_timestamp
+        monotonic for the non-parallel execution cases. In other words, we only
+        assign the new tentative_last_master_timestamp to the
+        last_master_timestamp if the tentative one is bigger. If the tentative
+        is too big so that it's beyond current slave time, we assign the
+        current time of the slave to the last_master_timestamp.
+      */
+      time_t tentative_last_master_timestamp=
+        ev->when.tv_sec + (time_t) ev->exec_time;
+
+      if (tentative_last_master_timestamp > rli->last_master_timestamp)
+      {
+        rli->last_master_timestamp= std::min(tentative_last_master_timestamp,
+            time(nullptr));
+      }
       DBUG_ASSERT(rli->last_master_timestamp >= 0);
     }
 
@@ -7243,7 +7261,6 @@ static int queue_event(Master_info* mi,const char* buf, ulong event_len)
      direct master (an unsupported, useless setup!).
   */
 
-  mysql_mutex_lock(log_lock);
   s_id= uint4korr(buf + SERVER_ID_OFFSET);
 
   /*
@@ -7284,6 +7301,7 @@ static int queue_event(Master_info* mi,const char* buf, ulong event_len)
       IGNORE_SERVER_IDS it increments mi->get_master_log_pos()
       as well as rli->group_relay_log_pos.
     */
+    mysql_mutex_lock(log_lock);
     if (!(s_id == ::server_id && !mi->rli->replicate_same_server_id) ||
         (event_type != FORMAT_DESCRIPTION_EVENT &&
          event_type != ROTATE_EVENT &&
@@ -7295,6 +7313,7 @@ static int queue_event(Master_info* mi,const char* buf, ulong event_len)
       rli->ign_master_log_pos_end= mi->get_master_log_pos();
     }
     rli->relay_log.signal_update(); // the slave SQL thread needs to re-check
+    mysql_mutex_unlock(log_lock);
     DBUG_PRINT("info", ("master_log_pos: %lu, event originating from %u server, ignored",
                         (ulong) mi->get_master_log_pos(), uint4korr(buf + SERVER_ID_OFFSET)));
   }
@@ -7322,11 +7341,12 @@ static int queue_event(Master_info* mi,const char* buf, ulong event_len)
     {
       error= ER_SLAVE_RELAY_LOG_WRITE_FAILURE;
     }
+    mysql_mutex_lock(log_lock);
     rli->ign_master_log_name_end[0]= 0; // last event is not ignored
+    mysql_mutex_unlock(log_lock);
     if (save_buf != NULL)
       buf= save_buf;
   }
-  mysql_mutex_unlock(log_lock);
 
 skip_relay_logging:
   
@@ -7838,7 +7858,7 @@ static Log_event* next_event(Relay_log_info* rli)
            Relay-log nor to process by Workers.
         */
         if (!rli->is_parallel_exec() && reset_seconds_behind_master)
-          rli->last_master_timestamp= 0;
+          rli->slave_has_caughtup= true;
 
         DBUG_ASSERT(rli->relay_log.get_open_count() ==
                     rli->cur_log_old_open_count);
@@ -7957,8 +7977,9 @@ static Log_event* next_event(Relay_log_info* rli)
             (void) mts_checkpoint_routine(rli, period, false, true/*need_data_lock=true*/); // TODO: ALFRANIO ERROR
             mysql_mutex_lock(log_lock);
             // More to the empty relay-log all assigned events done so reset it.
+            // Reset the flag of slave_has_caught_up
             if (rli->gaq->empty() && reset_seconds_behind_master)
-              rli->last_master_timestamp= 0;
+              rli->slave_has_caughtup= true;
 
             if (DBUG_EVALUATE_IF("check_slave_debug_group", 1, 0))
               period= 10000000ULL;
@@ -8209,6 +8230,7 @@ int rotate_relay_log(Master_info* mi)
 
   Relay_log_info* rli= mi->rli;
   int error= 0;
+  Format_description_log_event *fde_copy = NULL;
 
   /*
      We need to test inited because otherwise, new_file() will attempt to lock
@@ -8220,8 +8242,33 @@ int rotate_relay_log(Master_info* mi)
     goto end;
   }
 
+  /*
+   * Older FDE events with version <4 are not used during relay log rotation
+   * see open_binlog()
+   */
+  if (mi->get_mi_description_event() &&
+      mi->get_mi_description_event()->binlog_version>=4) {
+    IO_CACHE tmp_file;
+    if ((error=
+        init_io_cache(&tmp_file, -1, 200, WRITE_CACHE, 0, 0, MYF(MY_WME)))) {
+      goto end;
+    }
+    mi->get_mi_description_event()->write(&tmp_file);
+    if ((error= reinit_io_cache(&tmp_file, READ_CACHE, 0, 0, 0))) {
+      goto end;
+    }
+    fde_copy = (Format_description_log_event*)
+               Log_event::read_log_event(&tmp_file, NULL,
+                                         mi->get_mi_description_event(),
+                                         TRUE, NULL);
+    end_io_cache(&tmp_file);
+  }
+  mysql_mutex_unlock(&mi->data_lock);
   /* If the relay log is closed, new_file() will do nothing. */
-  error= rli->relay_log.new_file(mi->get_mi_description_event());
+  error= rli->relay_log.new_file(fde_copy);
+  mysql_mutex_lock(&mi->data_lock);
+  if (fde_copy)
+    delete fde_copy;
   if (error != 0)
     goto end;
 

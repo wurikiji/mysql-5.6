@@ -6539,12 +6539,6 @@ get_mm_parts(RANGE_OPT_PARAM *param, Item_func *cond_func, Field *field,
           is_spatial_operator(cond_func->functype()))
         continue;
 
-      /* TODO: currently we skip range analysis optimization
-       * for document fields
-       */
-      if (field->type() == MYSQL_TYPE_DOCUMENT)
-        continue;
-
       SEL_ARG *sel_arg=0;
       if (!tree && !(tree=new SEL_TREE()))
 	DBUG_RETURN(0);				// OOM
@@ -7011,6 +7005,12 @@ get_mm_leaf(RANGE_OPT_PARAM *param, Item *conf_func, Field *field,
     goto end;
   }
 
+  if (field->type() == MYSQL_TYPE_DOCUMENT)
+  {
+    // Clean up the document blob.
+    Field_document *field_document = (Field_document *)field;
+    field_document->reset_as_blob();
+  }
   if (save_value_and_handle_conversion(&tree, value, type, field,
                                        &impossible_cond_cause, alloc))
     goto end;
@@ -10904,8 +10904,15 @@ int QUICK_SELECT_DESC::get_next()
       will use ha_index_prev() to read data, we need to let the
       handler know where to end the scan in order to avoid that the
       ICP implemention continues to read past the range boundary.
+
+      An addition for MyRocks:
+      MyRocks needs to know both start of the range and end of the range
+      in order to use its bloom filters. This is useful regardless of whether
+      ICP is usable (e.g. it is used for index-only scans which do not use
+      ICP). Because of that, we remove the following:
+
+      // if (file->pushed_idx_cond)
     */
-    if (file->pushed_idx_cond)
     {
       if (!eqrange_all_keyparts)
       {

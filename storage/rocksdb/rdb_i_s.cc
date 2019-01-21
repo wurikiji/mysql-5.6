@@ -603,6 +603,107 @@ static ST_FIELD_INFO i_s_rocksdb_cfoptions_fields_info[] =
   ROCKSDB_FIELD_INFO_END
 };
 
+/*
+ * helper function for i_s_rocksdb_global_info_fill_table
+ * to insert (TYPE, KEY, VALUE) rows into
+ * information_schema.rocksdb_global_info
+ */
+static int global_info_fill_row(THD *thd,
+                             TABLE_LIST *tables,
+                             const char *type,
+                             const char *name,
+                             const char *value)
+{
+  Field **field = tables->table->field;
+
+  field[0]->store(type, strlen(type), system_charset_info);
+  field[1]->store(name, strlen(name), system_charset_info);
+  field[2]->store(value, strlen(value), system_charset_info);
+
+  return schema_table_store_record(thd, tables->table);
+}
+
+/*
+  Support for INFORMATION_SCHEMA.ROCKSDB_GLOBAL_INFO dynamic table
+ */
+static int i_s_rocksdb_global_info_fill_table(THD *thd,
+                                              TABLE_LIST *tables,
+                                              Item *cond)
+{
+  DBUG_ENTER("i_s_rocksdb_global_info_fill_table");
+  static const uint32_t INT_BUF_LEN = 21;
+  static const uint32_t GTID_BUF_LEN = 60;
+  static const uint32_t CF_ID_INDEX_BUF_LEN = 60;
+
+  int ret= 0;
+
+  /* binlog info */
+  Binlog_info_manager *blm = get_binlog_manager();
+  char file_buf[FN_REFLEN+1]= {0};
+  my_off_t pos = 0;
+  char pos_buf[INT_BUF_LEN]= {0};
+  char gtid_buf[GTID_BUF_LEN]= {0};
+
+  if (blm->read(file_buf, pos, gtid_buf)) {
+    snprintf(pos_buf, INT_BUF_LEN, "%lu", (uint64_t) pos);
+    ret |= global_info_fill_row(thd, tables, "BINLOG", "FILE", file_buf);
+    ret |= global_info_fill_row(thd, tables, "BINLOG", "POS", pos_buf);
+    ret |= global_info_fill_row(thd, tables, "BINLOG", "GTID", gtid_buf);
+  }
+
+  /* max index info */
+  Dict_manager *dict_manager = get_dict_manager();
+  uint32_t max_index_id;
+  char max_index_id_buf[INT_BUF_LEN]= {0};
+
+  if (dict_manager->get_max_index_id(&max_index_id)) {
+    snprintf(max_index_id_buf, INT_BUF_LEN, "%u", max_index_id);
+    ret |= global_info_fill_row(thd, tables, "MAX_INDEX_ID", "MAX_INDEX_ID",
+                                max_index_id_buf);
+  }
+
+  /* cf_id -> cf_flags */
+  char cf_id_buf[INT_BUF_LEN]= {0};
+  char cf_value_buf[FN_REFLEN+1] = {0};
+  Column_family_manager cf_manager = rocksdb_get_cf_manager();
+  for (auto cf_handle : cf_manager.get_all_cf()) {
+    uint flags;
+    dict_manager->get_cf_flags(cf_handle->GetID(), &flags);
+    snprintf(cf_id_buf, INT_BUF_LEN, "%u", cf_handle->GetID());
+    snprintf(cf_value_buf, FN_REFLEN, "%s [%u]", cf_handle->GetName().c_str(),
+        flags);
+    ret |= global_info_fill_row(thd, tables, "CF_FLAGS", cf_id_buf,
+        cf_value_buf);
+
+    if (ret)
+      break;
+  }
+
+  /* DDL_DROP_INDEX_ONGOING */
+  std::vector<GL_INDEX_ID> gl_index_ids;
+  dict_manager->get_drop_indexes_ongoing(&gl_index_ids);
+  char cf_id_index_buf[CF_ID_INDEX_BUF_LEN]= {0};
+  for (auto gl_index_id : gl_index_ids) {
+    snprintf(cf_id_index_buf, CF_ID_INDEX_BUF_LEN, "cf_id:%u,index_id:%u",
+        gl_index_id.cf_id, gl_index_id.index_id);
+    ret |= global_info_fill_row(thd, tables, "DDL_DROP_INDEX_ONGOING",
+        cf_id_index_buf, "");
+
+    if (ret)
+      break;
+  }
+
+  DBUG_RETURN(ret);
+}
+
+static ST_FIELD_INFO i_s_rocksdb_global_info_fields_info[] =
+{
+  ROCKSDB_FIELD_INFO("TYPE", FN_REFLEN+1, MYSQL_TYPE_STRING, 0),
+  ROCKSDB_FIELD_INFO("NAME", FN_REFLEN+1, MYSQL_TYPE_STRING, 0),
+  ROCKSDB_FIELD_INFO("VALUE", FN_REFLEN+1, MYSQL_TYPE_STRING, 0),
+  ROCKSDB_FIELD_INFO_END
+};
+
 struct i_s_rocksdb_ddl {
   THD *thd;
   TABLE_LIST *tables;
@@ -717,6 +818,20 @@ static int i_s_rocksdb_cfoptions_init(void *p)
   DBUG_RETURN(0);
 }
 
+static int i_s_rocksdb_global_info_init(void *p)
+{
+  ST_SCHEMA_TABLE *schema;
+
+  DBUG_ENTER("i_s_rocksdb_global_info_init");
+
+  schema= reinterpret_cast<ST_SCHEMA_TABLE*>(p);
+
+  schema->fields_info= i_s_rocksdb_global_info_fields_info;
+  schema->fill_table= i_s_rocksdb_global_info_fill_table;
+
+  DBUG_RETURN(0);
+}
+
 /* Given a path to a file return just the filename portion. */
 static std::string filename_without_path(
     const std::string& path)
@@ -771,6 +886,10 @@ static int i_s_rocksdb_index_file_map_fill_table(
         field[1]->store(-1, true);
         field[3]->store(-1, true);
         field[4]->store(-1, true);
+        field[5]->store(-1, true);
+        field[6]->store(-1, true);
+        field[7]->store(-1, true);
+        field[8]->store(-1, true);
       }
       else {
         for (auto it : stats) {
@@ -779,6 +898,10 @@ static int i_s_rocksdb_index_file_map_fill_table(
           field[1]->store(it.gl_index_id.index_id, true);
           field[3]->store(it.rows, true);
           field[4]->store(it.data_size, true);
+          field[5]->store(it.entry_deletes, true);
+          field[6]->store(it.entry_singledeletes, true);
+          field[7]->store(it.entry_merges, true);
+          field[8]->store(it.entry_others, true);
 
           /* Tell MySQL about this row in the virtual table */
           ret= schema_table_store_record(thd, tables->table);
@@ -806,6 +929,11 @@ static ST_FIELD_INFO i_s_rocksdb_index_file_map_fields_info[] =
   ROCKSDB_FIELD_INFO("SST_NAME", NAME_LEN+1, MYSQL_TYPE_STRING, 0),
   ROCKSDB_FIELD_INFO("NUM_ROWS", sizeof(int64_t), MYSQL_TYPE_LONGLONG, 0),
   ROCKSDB_FIELD_INFO("DATA_SIZE", sizeof(int64_t), MYSQL_TYPE_LONGLONG, 0),
+  ROCKSDB_FIELD_INFO("ENTRY_DELETES", sizeof(int64_t), MYSQL_TYPE_LONGLONG, 0),
+  ROCKSDB_FIELD_INFO("ENTRY_SINGLEDELETES", sizeof(int64_t),
+                      MYSQL_TYPE_LONGLONG, 0),
+  ROCKSDB_FIELD_INFO("ENTRY_MERGES", sizeof(int64_t), MYSQL_TYPE_LONGLONG, 0),
+  ROCKSDB_FIELD_INFO("ENTRY_OTHERS", sizeof(int64_t), MYSQL_TYPE_LONGLONG, 0),
   ROCKSDB_FIELD_INFO_END
 };
 
@@ -910,6 +1038,23 @@ struct st_mysql_plugin i_s_rocksdb_cfoptions=
   "RocksDB column family options",
   PLUGIN_LICENSE_GPL,
   i_s_rocksdb_cfoptions_init,
+  i_s_rocksdb_deinit,
+  0x0001,                             /* version number (0.1) */
+  nullptr,                            /* status variables */
+  nullptr,                            /* system variables */
+  nullptr,                            /* config options */
+  0,                                  /* flags */
+};
+
+struct st_mysql_plugin i_s_rocksdb_global_info=
+{
+  MYSQL_INFORMATION_SCHEMA_PLUGIN,
+  &i_s_rocksdb_info,
+  "ROCKSDB_GLOBAL_INFO",
+  "Facebook",
+  "RocksDB global info",
+  PLUGIN_LICENSE_GPL,
+  i_s_rocksdb_global_info_init,
   i_s_rocksdb_deinit,
   0x0001,                             /* version number (0.1) */
   NULL,                               /* status variables */

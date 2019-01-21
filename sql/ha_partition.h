@@ -291,6 +291,8 @@ public:
                  ha_partition *clone_arg,
                  MEM_ROOT *clone_mem_root_arg);
    ~ha_partition();
+
+   bool init_with_fields();
   /*
     A partition handler has no characteristics in itself. It only inherits
     those from the underlying handlers. Here we set-up those constants to
@@ -1176,7 +1178,7 @@ public:
     Admin of table spaces is not applicable to the partition handler (InnoDB)
     This means that the following method is not implemented:
     -------------------------------------------------------------------------
-    virtual int discard_or_import_tablespace(my_bool discard)
+    virtual int discard_or_import_tablespace(uint discard)
   */
 
   /*

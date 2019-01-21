@@ -32,6 +32,8 @@ select @@global.gtid_executed;
 -- replace_result $uuid uuid
 select * from mysql.slave_gtid_info;
 
+--exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.2.expect
+
 --write_file $MYSQL_TMP_DIR/truncate_tail_wal.sh
 #!/bin/bash
 
@@ -103,6 +105,8 @@ connection slave;
 
 # Corrupting WAL. MyRocks does point in time recovery with wal_recovery_mode=2.
 # It loses some data but can resync after restarting slave.
+
+--exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.2.expect
 
 --write_file $MYSQL_TMP_DIR/corrupt_wal.sh
 #!/bin/bash

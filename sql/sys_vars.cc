@@ -1964,6 +1964,36 @@ static Sys_var_ulong Sys_max_connections(
        /* max_connections is used as a sizing hint by the performance schema. */
        sys_var::PARSE_EARLY);
 
+static bool update_max_running_queries(sys_var *self, THD *thd,
+                                       enum_var_type type) {
+  db_ac->update_max_running_queries(opt_max_running_queries);
+  return false;
+}
+
+static bool update_max_waiting_queries(sys_var *self, THD *thd,
+                                       enum_var_type type) {
+  db_ac->update_max_waiting_queries(opt_max_waiting_queries);
+  return false;
+}
+
+static Sys_var_ulong Sys_max_running_queries(
+       "max_running_queries",
+       "The maximum number of running queries allowed for a database. "
+       "If this value is 0, no such limits are applied.",
+       GLOBAL_VAR(opt_max_running_queries), CMD_LINE(REQUIRED_ARG),
+       VALID_RANGE(0, 100000), DEFAULT(0), BLOCK_SIZE(1),
+       NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0),
+       ON_UPDATE(update_max_running_queries));
+
+static Sys_var_ulong Sys_max_waiting_queries(
+       "max_waiting_queries",
+       "The maximum number of waiting queries allowed for a database."
+       "If this value is 0, no such limits are applied.",
+       GLOBAL_VAR(opt_max_waiting_queries), CMD_LINE(REQUIRED_ARG),
+       VALID_RANGE(0, 100000), DEFAULT(0), BLOCK_SIZE(1),
+       NO_MUTEX_GUARD, NOT_IN_BINLOG,
+       ON_CHECK(0), ON_UPDATE(update_max_waiting_queries));
+
 static Sys_var_ulong Sys_max_connect_errors(
        "max_connect_errors",
        "If there is more than this number of interrupted connections from "
@@ -5225,6 +5255,13 @@ static Sys_var_mybool Sys_gtid_precommit("gtid_precommit",
 
 #endif // HAVE_REPLICATION
 
+static Sys_var_enum Sys_slave_gtid_info(
+       "slave_gtid_info",
+       "Whether SQL threads update mysql.slave_gtid_info table. If this value "
+       "is OPTIMIZED, updating the table is done inside storage engines to "
+       "avoid MySQL layer's performance overhead",
+       GLOBAL_VAR(slave_gtid_info), CMD_LINE(REQUIRED_ARG),
+       slave_gtid_info_names, DEFAULT(SLAVE_GTID_INFO_ON));
 
 static Sys_var_mybool Sys_disconnect_on_expired_password(
        "disconnect_on_expired_password",

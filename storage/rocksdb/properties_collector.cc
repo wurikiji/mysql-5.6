@@ -21,6 +21,8 @@
 #include <map>
 
 /* MySQL header files */
+#include "./log.h"
+#include "./my_stacktrace.h"
 #include "./sql_array.h"
 
 /* MyRocks header files */
@@ -40,7 +42,7 @@ MyRocksTablePropertiesCollector::MyRocksTablePropertiesCollector(
     cf_id_(cf_id),
     ddl_manager_(ddl_manager),
     rows_(0l), deleted_rows_(0l), max_deleted_rows_(0l),
-    params_(params)
+    file_size_(0), params_(params)
 {
   deleted_rows_window_.resize(params_.window_, false);
 }
@@ -98,7 +100,33 @@ MyRocksTablePropertiesCollector::AddUserKey(
     }
     auto& stats = stats_.back();
     stats.data_size += key.size()+value.size();
-    stats.rows++;
+
+    // Incrementing per-index entry-type statistics
+    switch (type) {
+    case rocksdb::kEntryPut:
+      stats.rows++;
+      break;
+    case rocksdb::kEntryDelete:
+      stats.entry_deletes++;
+      break;
+    case rocksdb::kEntrySingleDelete:
+      stats.entry_singledeletes++;
+      break;
+    case rocksdb::kEntryMerge:
+      stats.entry_merges++;
+      break;
+    case rocksdb::kEntryOther:
+      stats.entry_others++;
+      break;
+    default:
+      // NO_LINT_DEBUG
+      sql_print_error("RocksDB: Unexpected entry type found: %u. "
+                      "This should not happen so aborting the system.", type);
+      abort_with_stack_traces();
+      break;
+    }
+
+    stats.actual_disk_size += file_size-file_size_;
 
     if (params_.window_ > 0) {
       // record the "is deleted" flag into the sliding window
@@ -161,14 +189,6 @@ rocksdb::Status
 MyRocksTablePropertiesCollector::Finish(
   rocksdb::UserCollectedProperties* properties
 ) {
-  std::vector<GL_INDEX_ID> changed_indexes;
-  changed_indexes.resize(stats_.size());
-  std::transform(
-    stats_.begin(), stats_.end(),
-    changed_indexes.begin(),
-    [](const IndexStats& s) {return s.gl_index_id;}
-  );
-  ddl_manager_->add_changed_indexes(changed_indexes);
   properties->insert({INDEXSTATS_KEY, IndexStats::materialize(stats_)});
   return rocksdb::Status::OK();
 }
@@ -220,6 +240,16 @@ MyRocksTablePropertiesCollector::GetReadableStats(
   s.append(std::to_string(it.data_size));
   s.append(", rows:");
   s.append(std::to_string(it.rows));
+  s.append(", actual_disk_size:");
+  s.append(std::to_string(it.actual_disk_size));
+  s.append(", deletes:");
+  s.append(std::to_string(it.entry_deletes));
+  s.append(", single_deletes:");
+  s.append(std::to_string(it.entry_singledeletes));
+  s.append(", merges:");
+  s.append(std::to_string(it.entry_merges));
+  s.append(", others:");
+  s.append(std::to_string(it.entry_others));
   s.append(", distincts per prefix: [");
   for (auto num : it.distinct_keys_per_prefix) {
     s.append(std::to_string(num));
@@ -278,15 +308,19 @@ std::string MyRocksTablePropertiesCollector::IndexStats::materialize(
   std::vector<IndexStats> stats
 ) {
   String ret;
-  write_short(&ret, INDEX_STATS_VERSION);
+  write_short(&ret, INDEX_STATS_VERSION_ENTRY_TYPES);
   for (auto i : stats) {
     write_int(&ret, i.gl_index_id.cf_id);
     write_int(&ret, i.gl_index_id.index_id);
     assert(sizeof i.data_size <= 8);
     write_int64(&ret, i.data_size);
     write_int64(&ret, i.rows);
-    write_int64(&ret, i.approximate_size);
+    write_int64(&ret, i.actual_disk_size);
     write_int64(&ret, i.distinct_keys_per_prefix.size());
+    write_int64(&ret, i.entry_deletes);
+    write_int64(&ret, i.entry_singledeletes);
+    write_int64(&ret, i.entry_merges);
+    write_int64(&ret, i.entry_others);
     for (auto num_keys : i.distinct_keys_per_prefix) {
       write_int64(&ret, num_keys);
     }
@@ -304,19 +338,40 @@ int MyRocksTablePropertiesCollector::IndexStats::unmaterialize(
   const char* p = s.data();
   const char* p2 = s.data() + s.size();
 
-  if (p+2 > p2 || read_short(&p) != INDEX_STATS_VERSION) {
+  if (p+2 > p2)
+  {
     return 1;
   }
 
-  while (p < p2) {
-    IndexStats stats;
-    if (p+
-       sizeof(stats.gl_index_id.cf_id)+
-       sizeof(stats.gl_index_id.index_id)+
-       sizeof(stats.data_size)+
-       sizeof(stats.rows)+
-       sizeof(stats.approximate_size)+
-       sizeof(uint64) > p2)
+  int version= read_short(&p);
+  IndexStats stats;
+  // Make sure version is within supported range.
+  if (version < INDEX_STATS_VERSION_INITIAL ||
+      version > INDEX_STATS_VERSION_ENTRY_TYPES)
+  {
+    // NO_LINT_DEBUG
+    sql_print_error("Index stats version %d was outside of supported range. "
+                    "This should not happen so aborting the system.", version);
+    abort_with_stack_traces();
+  }
+
+  size_t needed = sizeof(stats.gl_index_id.cf_id)+
+                  sizeof(stats.gl_index_id.index_id)+
+                  sizeof(stats.data_size)+
+                  sizeof(stats.rows)+
+                  sizeof(stats.actual_disk_size)+
+                  sizeof(uint64);
+  if (version >= INDEX_STATS_VERSION_ENTRY_TYPES)
+  {
+    needed += sizeof(stats.entry_deletes)+
+              sizeof(stats.entry_singledeletes)+
+              sizeof(stats.entry_merges)+
+              sizeof(stats.entry_others);
+  }
+
+  while (p < p2)
+  {
+    if (p+needed > p2)
     {
       return 1;
     }
@@ -324,19 +379,26 @@ int MyRocksTablePropertiesCollector::IndexStats::unmaterialize(
     stats.gl_index_id.index_id = read_int(&p);
     stats.data_size = read_int64(&p);
     stats.rows = read_int64(&p);
-    stats.approximate_size = read_int64(&p);
+    stats.actual_disk_size = read_int64(&p);
     stats.distinct_keys_per_prefix.resize(read_int64(&p));
+    if (version >= INDEX_STATS_VERSION_ENTRY_TYPES)
+    {
+      stats.entry_deletes = read_int64(&p);
+      stats.entry_singledeletes = read_int64(&p);
+      stats.entry_merges = read_int64(&p);
+      stats.entry_others = read_int64(&p);
+    }
     if (p+stats.distinct_keys_per_prefix.size()
         *sizeof(stats.distinct_keys_per_prefix[0]) > p2)
     {
       return 1;
     }
-    for (std::size_t i=0; i < stats.distinct_keys_per_prefix.size(); i++) {
+    for (std::size_t i= 0; i < stats.distinct_keys_per_prefix.size(); i++)
+    {
       stats.distinct_keys_per_prefix[i] = read_int64(&p);
     }
     ret.push_back(stats);
   }
-
   return 0;
 }
 
@@ -344,14 +406,42 @@ int MyRocksTablePropertiesCollector::IndexStats::unmaterialize(
   Merges one IndexStats into another. Can be used to come up with the stats
   for the index based on stats for each sst
 */
-void MyRocksTablePropertiesCollector::IndexStats::merge(const IndexStats& s) {
+void MyRocksTablePropertiesCollector::IndexStats::merge(
+  const IndexStats& s, bool increment
+) {
+  std::size_t i;
+
   gl_index_id = s.gl_index_id;
-  rows += s.rows;
-  data_size += s.data_size;
-  if (distinct_keys_per_prefix.size() < s.distinct_keys_per_prefix.size()) {
+  if (distinct_keys_per_prefix.size() < s.distinct_keys_per_prefix.size())
+  {
     distinct_keys_per_prefix.resize(s.distinct_keys_per_prefix.size());
   }
-  for (std::size_t i=0; i < s.distinct_keys_per_prefix.size(); i++) {
-    distinct_keys_per_prefix[i] += s.distinct_keys_per_prefix[i];
+  if (increment)
+  {
+    rows += s.rows;
+    data_size += s.data_size;
+    actual_disk_size += s.actual_disk_size;
+    entry_deletes += s.entry_deletes;
+    entry_singledeletes += s.entry_singledeletes;
+    entry_merges += s.entry_merges;
+    entry_others += s.entry_others;
+    for (i = 0; i < s.distinct_keys_per_prefix.size(); i++)
+    {
+      distinct_keys_per_prefix[i] += s.distinct_keys_per_prefix[i];
+    }
+  }
+  else
+  {
+    rows -= s.rows;
+    data_size -= s.data_size;
+    actual_disk_size -= s.actual_disk_size;
+    entry_deletes -= s.entry_deletes;
+    entry_singledeletes -= s.entry_singledeletes;
+    entry_merges -= s.entry_merges;
+    entry_others -= s.entry_others;
+    for (i = 0; i < s.distinct_keys_per_prefix.size(); i++)
+    {
+      distinct_keys_per_prefix[i] -= s.distinct_keys_per_prefix[i];
+    }
   }
 }
